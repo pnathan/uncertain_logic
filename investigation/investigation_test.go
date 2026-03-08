@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"uncertain_logic/belnap"
-	"uncertain_logic/models"
-	"uncertain_logic/temporal"
+	"github.com/pnathan/uncertain_logic/belnap"
+	"github.com/pnathan/uncertain_logic/models"
+	"github.com/pnathan/uncertain_logic/temporal"
 )
 
 func mustTime(year, month, day int) time.Time {

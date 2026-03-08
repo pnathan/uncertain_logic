@@ -3,8 +3,8 @@ package investigation
 import (
 	"sort"
 
-	"uncertain_logic/models"
-	"uncertain_logic/temporal"
+	"github.com/pnathan/uncertain_logic/models"
+	"github.com/pnathan/uncertain_logic/temporal"
 )
 
 // TimeSlice groups claims about a subject whose EventIntervals overlap.

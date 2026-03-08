@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"uncertain_logic/belnap"
-	"uncertain_logic/models"
-	"uncertain_logic/subjective"
+	"github.com/pnathan/uncertain_logic/belnap"
+	"github.com/pnathan/uncertain_logic/models"
+	"github.com/pnathan/uncertain_logic/subjective"
 )
 
 const maxDepth = 3
