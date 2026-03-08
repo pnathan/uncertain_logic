@@ -29,7 +29,7 @@ func TestDogmatic(t *testing.T) {
 
 func TestFromReliability(t *testing.T) {
 	cases := []struct {
-		r    float64
+		r       float64
 		b, d, u float64
 	}{
 		{1.0, 1, 0, 0},

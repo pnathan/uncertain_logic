@@ -25,19 +25,19 @@ func Open(desc string) EventInterval {
 type AllenRelation int
 
 const (
-	Precedes    AllenRelation = iota // a before b, no contact
-	Meets                           // a ends exactly when b starts
-	Overlaps                        // a starts before b, they share some time, a ends before b ends
-	FinishedBy                      // a contains b's endpoint; a and b end together
-	Contains                        // a contains b entirely (a starts before b and ends after b)
-	Starts                          // a starts with b, a ends before b
-	Equals                          // a and b are identical
-	StartedBy                       // b starts with a, b ends before a
-	During                          // b contains a entirely
-	Finishes                        // a ends with b, a starts after b
-	OverlappedBy                    // b starts before a, they share some time, b ends before a ends
-	MetBy                           // b ends exactly when a starts
-	PrecededBy                      // b before a, no contact
+	Precedes     AllenRelation = iota // a before b, no contact
+	Meets                             // a ends exactly when b starts
+	Overlaps                          // a starts before b, they share some time, a ends before b ends
+	FinishedBy                        // a contains b's endpoint; a and b end together
+	Contains                          // a contains b entirely (a starts before b and ends after b)
+	Starts                            // a starts with b, a ends before b
+	Equals                            // a and b are identical
+	StartedBy                         // b starts with a, b ends before a
+	During                            // b contains a entirely
+	Finishes                          // a ends with b, a starts after b
+	OverlappedBy                      // b starts before a, they share some time, b ends before a ends
+	MetBy                             // b ends exactly when a starts
+	PrecededBy                        // b before a, no contact
 )
 
 // Relate returns the Allen relation between two intervals.

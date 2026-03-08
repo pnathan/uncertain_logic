@@ -10,7 +10,7 @@ import (
 type SourceType int
 
 const (
-	Analyst      SourceType = iota
+	Analyst SourceType = iota
 	Journalist
 	Expert
 	Insider
@@ -50,7 +50,7 @@ func (s SourceType) String() string {
 type ClaimType int
 
 const (
-	Factual     ClaimType = iota
+	Factual ClaimType = iota
 	Predictive
 	Evaluative
 	Causal
@@ -202,19 +202,19 @@ type Claim struct {
 	Predicate string
 	Value     string
 
-	Content   string    // full text of the claim
+	Content   string // full text of the claim
 	ClaimType ClaimType
 
 	// For meta-claims, Valence describes the relationship to the target:
 	// Supports = endorses/attributes, Refutes = disputes/contradicts
 	Valence Valence
 
-	AssertionTime time.Time              // Q2: when did they claim it?
-	EventInterval temporal.EventInterval // Q4: when does the claim say it happened?
-	SourceURL     string
+	AssertionTime     time.Time              // Q2: when did they claim it?
+	EventInterval     temporal.EventInterval // Q4: when does the claim say it happened?
+	SourceURL         string
 	SourceDescription string
-	EvidenceIDs   []string
-	Notes         string
+	EvidenceIDs       []string
+	Notes             string
 }
 
 // ToProposition extracts the Proposition from a Claim.
