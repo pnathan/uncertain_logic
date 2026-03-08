@@ -1,6 +1,6 @@
 # uncertain_logic
 
-A Go library for reasoning about claims made by sources that may lie, be ignorant, or contradict each other — without the reasoning system exploding.
+An AGPL3 Go library for reasoning about claims made by sources that may lie, be ignorant, or contradict each other — without the reasoning system exploding.
 
 The library composes three formal systems:
 
