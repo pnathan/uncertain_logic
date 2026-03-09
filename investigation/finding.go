@@ -24,11 +24,18 @@ type Finding struct {
 	Notes           string
 }
 
+// Clone returns a deep copy of the Finding.
+func (f Finding) Clone() Finding {
+	return f
+}
+
 // RegisterAnalysis stores a ClaimAnalysis as a Finding in the investigation
-// and returns it. The Finding's ID is addressable as a TargetClaimID in
-// subsequent meta-claims; its already-computed credibility is reused
+// and returns a value copy. The Finding's ID is addressable as a TargetClaimID
+// in subsequent meta-claims; its already-computed credibility is reused
 // rather than recomputed.
-func (inv *Investigation) RegisterAnalysis(a *ClaimAnalysis) *Finding {
+func (inv *Investigation) RegisterAnalysis(a *ClaimAnalysis) Finding {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	id := inv.nextID("finding")
 	f := &Finding{
 		ID:              id,
@@ -42,5 +49,5 @@ func (inv *Investigation) RegisterAnalysis(a *ClaimAnalysis) *Finding {
 		Notes:           fmt.Sprintf("Analysis of claim %s", a.Claim.ID),
 	}
 	inv.findings[id] = f
-	return f
+	return f.Clone()
 }

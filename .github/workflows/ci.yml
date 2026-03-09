@@ -17,6 +17,16 @@ jobs:
           go-version-file: go.mod
       - run: go test ./...
 
+  race:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -count=1 ./...
+
   vet:
     name: go vet
     runs-on: ubuntu-latest
@@ -38,7 +48,7 @@ jobs:
       - run: test -z "$(gofmt -l .)"
 
   cover:
-    name: go cover
+    name: coverage >= 95%
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,3 +57,11 @@ jobs:
           go-version-file: go.mod
       - run: go test -coverprofile=coverage.out ./...
       - run: go tool cover -func=coverage.out
+      - name: Enforce 95% minimum coverage
+        run: |
+          total=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          if echo "$total 95.0" | awk '{exit ($1 >= $2)}'; then
+            echo "FAIL: coverage ${total}% is below 95.0%"
+            exit 1
+          fi

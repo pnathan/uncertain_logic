@@ -116,6 +116,49 @@ func TestPointIntervalVsDisjoint(t *testing.T) {
 	}
 }
 
+func TestClone(t *testing.T) {
+	// Concrete interval: clone must be independent
+	orig := interval(2020, 1, 1, 2020, 12, 31)
+	orig.Desc = "original"
+	clone := orig.Clone()
+
+	// Mutate clone's pointers — original must be unaffected
+	*clone.Start = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	*clone.End = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	clone.Desc = "cloned"
+
+	if orig.Start.Year() != 2020 {
+		t.Errorf("clone mutated original Start: got year %d", orig.Start.Year())
+	}
+	if orig.End.Year() != 2020 {
+		t.Errorf("clone mutated original End: got year %d", orig.End.Year())
+	}
+	if orig.Desc != "original" {
+		t.Errorf("clone mutated original Desc: got %q", orig.Desc)
+	}
+
+	// Open interval (nil pointers): clone must not panic
+	open := Open("fuzzy")
+	openClone := open.Clone()
+	if openClone.Start != nil || openClone.End != nil {
+		t.Error("clone of open interval should have nil Start/End")
+	}
+	if openClone.Desc != "fuzzy" {
+		t.Errorf("clone Desc = %q, want fuzzy", openClone.Desc)
+	}
+
+	// Half-open: only Start set
+	halfStart := EventInterval{Start: tp(2020, 6, 1)}
+	hsClone := halfStart.Clone()
+	*hsClone.Start = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	if halfStart.Start.Year() != 2020 {
+		t.Errorf("half-open clone mutated original Start")
+	}
+	if hsClone.End != nil {
+		t.Error("half-open clone should have nil End")
+	}
+}
+
 func TestGWBScenario(t *testing.T) {
 	// GWB scenario: two editorials about different presidential terms
 	term1 := interval(1985, 1, 1, 1993, 1, 1) // pre-presidency / first term window

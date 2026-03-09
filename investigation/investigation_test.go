@@ -1,7 +1,9 @@
 package investigation
 
 import (
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,16 +305,16 @@ func TestCycleSafety(t *testing.T) {
 func TestLoadAndRegister(t *testing.T) {
 	// --- Session 1: original investigation ---
 	inv1 := New("Is the cost estimate credible?")
-	inv1.LoadActors([]*models.Actor{
+	inv1.LoadActors([]models.Actor{
 		{ID: "senator", Name: "Senator X", SourceType: models.Expert, BaseReliability: 0.7},
 	})
-	inv1.LoadSubjects([]*models.Subject{
+	inv1.LoadSubjects([]models.Subject{
 		{ID: "bill42", Name: "Bill S.42", SubjectType: "legislation"},
 	})
 
 	iv := mkInterval(2024, 1, 1, 2024, 12, 31)
 	w := 0.85
-	costClaim := &models.Claim{
+	costClaim := models.Claim{
 		ID:            "claim_cost_001",
 		ActorID:       "senator",
 		SubjectID:     "bill42",
@@ -324,15 +326,15 @@ func TestLoadAndRegister(t *testing.T) {
 		EventInterval: iv,
 		EvidenceIDs:   []string{"ev_001"},
 	}
-	ev1 := &models.Evidence{
+	ev1 := models.Evidence{
 		ID:      "ev_001",
 		ClaimID: "claim_cost_001",
 		Content: "CBO score: $4.8B",
 		Valence: models.Supports,
 		Weight:  &w,
 	}
-	inv1.LoadClaims([]*models.Claim{costClaim})
-	inv1.LoadEvidence([]*models.Evidence{ev1})
+	inv1.LoadClaims([]models.Claim{costClaim})
+	inv1.LoadEvidence([]models.Evidence{ev1})
 
 	a, err := inv1.AnalyzeClaim("claim_cost_001")
 	if err != nil {
@@ -355,7 +357,7 @@ func TestLoadAndRegister(t *testing.T) {
 
 	// --- Session 2: oversight investigation loads prior finding ---
 	inv2 := New("Does the oversight body accept the prior finding?")
-	inv2.LoadActors([]*models.Actor{
+	inv2.LoadActors([]models.Actor{
 		{ID: "oversight", Name: "Oversight Board", SourceType: models.Regulator, BaseReliability: 0.9},
 	})
 	inv2.LoadFindings(persistedFindings)
@@ -835,7 +837,7 @@ func TestDanglingEvidenceID(t *testing.T) {
 	inv.AddSubject("s", "S", "general")
 	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
 
-	c := &models.Claim{
+	c := models.Claim{
 		ID:            "claim_dangling",
 		ActorID:       "a",
 		SubjectID:     "s",
@@ -847,7 +849,7 @@ func TestDanglingEvidenceID(t *testing.T) {
 		EventInterval: iv,
 		EvidenceIDs:   []string{"evidence_that_was_never_loaded"},
 	}
-	inv.LoadClaims([]*models.Claim{c})
+	inv.LoadClaims([]models.Claim{c})
 
 	a, err := inv.AnalyzeClaim("claim_dangling")
 	if err != nil {
@@ -856,5 +858,609 @@ func TestDanglingEvidenceID(t *testing.T) {
 	// Evidence was skipped; counts stay at zero
 	if a.SupportingCount != 0 || a.RefutingCount != 0 {
 		t.Errorf("dangling evidence should be skipped, got s=%d r=%d", a.SupportingCount, a.RefutingCount)
+	}
+}
+
+// TestConcurrentAccess: concurrent reads and writes must not race.
+// Run with -race to verify: go test -race -run TestConcurrentAccess ./investigation/...
+func TestConcurrentAccess(t *testing.T) {
+	inv := New("concurrent test")
+	inv.AddActor("a1", "Actor 1", models.Analyst, WithReliability(0.7))
+	inv.AddSubject("s1", "Subject 1", "company")
+
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+
+	var wg sync.WaitGroup
+	const goroutines = 10
+
+	// Concurrent writers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := inv.AssertClaim("a1", prop("s1", "metric", fmt.Sprintf("v%d", n)),
+				mustTime(2024, 1, 1), iv)
+			inv.AddEvidence(id, fmt.Sprintf("evidence %d", n), models.Supports)
+		}(i)
+	}
+
+	// Concurrent readers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inv.Actors()
+			inv.Subjects()
+			inv.Claims()
+			inv.Evidence()
+			inv.Findings()
+			inv.Q("s1", "metric", iv)
+			inv.ClaimsAbout("s1")
+			inv.MetaClaimsAbout("nonexistent")
+			inv.Summary()
+			inv.SubjectTimeline("s1")
+			inv.ActorBeliefHistory("a1", "s1")
+			inv.AnalyzeAll()
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestMutationMethods: Update* and AddActorConflict methods modify internal state correctly.
+func TestMutationMethods(t *testing.T) {
+	inv := New("mutation test")
+	inv.AddActor("a", "Actor", models.Analyst, WithReliability(0.7))
+	inv.AddSubject("s", "Subject", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	claimID := inv.AssertClaim("a", prop("s", "foo", "bar"), mustTime(2024, 1, 1), iv)
+	evID := inv.AddEvidence(claimID, "some evidence", models.Supports)
+	a, _ := inv.AnalyzeClaim(claimID)
+	finding := inv.RegisterAnalysis(a)
+
+	// UpdateActorReliability
+	if err := inv.UpdateActorReliability("a", 0.9); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateActorReliability("missing", 0.5); err == nil {
+		t.Error("expected error for missing actor")
+	}
+
+	// AddActorConflict
+	if err := inv.AddActorConflict("a", models.ConflictOfInterest{
+		Description: "test conflict", Direction: models.Long, Disclosed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.AddActorConflict("missing", models.ConflictOfInterest{}); err == nil {
+		t.Error("expected error for missing actor")
+	}
+
+	// UpdateActorNotes
+	if err := inv.UpdateActorNotes("a", "updated notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateActorNotes("missing", "x"); err == nil {
+		t.Error("expected error for missing actor")
+	}
+
+	// UpdateSubjectNotes
+	if err := inv.UpdateSubjectNotes("s", "subject notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateSubjectNotes("missing", "x"); err == nil {
+		t.Error("expected error for missing subject")
+	}
+
+	// UpdateClaimNotes
+	if err := inv.UpdateClaimNotes(claimID, "claim notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateClaimNotes("missing", "x"); err == nil {
+		t.Error("expected error for missing claim")
+	}
+
+	// UpdateEvidenceWeight
+	if err := inv.UpdateEvidenceWeight(evID, 0.95); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateEvidenceWeight("missing", 0.5); err == nil {
+		t.Error("expected error for missing evidence")
+	}
+
+	// UpdateEvidenceNotes
+	if err := inv.UpdateEvidenceNotes(evID, "evidence notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateEvidenceNotes("missing", "x"); err == nil {
+		t.Error("expected error for missing evidence")
+	}
+
+	// UpdateFindingNotes
+	if err := inv.UpdateFindingNotes(finding.ID, "finding notes"); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.UpdateFindingNotes("missing", "x"); err == nil {
+		t.Error("expected error for missing finding")
+	}
+}
+
+// TestConcurrentWriteWriteRace: many goroutines mutating the same Investigation simultaneously.
+// The race detector should find no issues.
+func TestConcurrentWriteWriteRace(t *testing.T) {
+	inv := New("write-write race test")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	const N = 50
+
+	var wg sync.WaitGroup
+
+	// Many goroutines adding actors with unique IDs
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := fmt.Sprintf("actor_%d", n)
+			inv.AddActor(id, fmt.Sprintf("Actor %d", n), models.Analyst, WithReliability(0.7))
+		}(i)
+	}
+
+	// Many goroutines adding subjects
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := fmt.Sprintf("subj_%d", n)
+			inv.AddSubject(id, fmt.Sprintf("Subject %d", n), "company")
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Now concurrent claims from those actors
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			actorID := fmt.Sprintf("actor_%d", n)
+			subjID := fmt.Sprintf("subj_%d", n%10)
+			claimID := inv.AssertClaim(actorID, prop(subjID, "metric", fmt.Sprintf("v%d", n)),
+				mustTime(2024, 1, 1), iv)
+			// Immediately add evidence to the claim we just created
+			inv.AddEvidence(claimID, fmt.Sprintf("evidence for %d", n), models.Supports, WithWeight(0.8))
+			inv.AddEvidence(claimID, fmt.Sprintf("counter-evidence for %d", n), models.Refutes, WithWeight(0.3))
+		}(i)
+	}
+	wg.Wait()
+
+	// Concurrent AssertFact (all touch _system actor creation path)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.AssertFact(prop(fmt.Sprintf("subj_%d", n%10), "ground_truth", fmt.Sprintf("v%d", n)), iv)
+		}(i)
+	}
+	wg.Wait()
+
+	// Concurrent meta-claims
+	claims := inv.Claims()
+	for i := 0; i < len(claims) && i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			targetID := claims[n].ID
+			inv.AssertMetaClaim("actor_0", targetID, "accuracy", "disputed",
+				mustTime(2024, 6, 1), WithValence(models.Refutes))
+		}(i)
+	}
+	wg.Wait()
+
+	if got := len(inv.Actors()); got < N {
+		t.Errorf("expected at least %d actors, got %d", N, got)
+	}
+}
+
+// TestConcurrentReadWriteHeavy: sustained mixed read/write traffic from many goroutines.
+func TestConcurrentReadWriteHeavy(t *testing.T) {
+	inv := New("heavy read-write test")
+	inv.AddActor("writer", "Writer", models.Analyst, WithReliability(0.8))
+	inv.AddSubject("target", "Target", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+
+	const writers = 20
+	const readers = 30
+	const opsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+
+	// Writers: add claims, evidence, meta-claims, facts, register findings
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				claimID := inv.AssertClaim("writer",
+					prop("target", fmt.Sprintf("prop_%d", n), fmt.Sprintf("val_%d_%d", n, j)),
+					mustTime(2024, 1, 1), iv)
+				inv.AddEvidence(claimID, "supporting", models.Supports)
+				inv.AddEvidence(claimID, "refuting", models.Refutes)
+
+				if j%5 == 0 {
+					inv.AssertFact(prop("target", fmt.Sprintf("fact_%d_%d", n, j), "true"), iv)
+				}
+				if j%3 == 0 {
+					a, err := inv.AnalyzeClaim(claimID)
+					if err == nil {
+						inv.RegisterAnalysis(a)
+					}
+				}
+			}
+		}(i)
+	}
+
+	// Readers: continuous querying while writers are active
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				inv.Q("target", fmt.Sprintf("prop_%d", n%writers), iv)
+				inv.ClaimsAbout("target")
+				inv.MetaClaimsAbout("nonexistent")
+				inv.Actors()
+				inv.Subjects()
+				inv.Claims()
+				inv.Evidence()
+				inv.Findings()
+				inv.Summary()
+				inv.SubjectTimeline("target")
+				inv.ActorBeliefHistory("writer", "target")
+				inv.AnalyzeAll()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentMutationMethods: mutation methods racing against each other and readers.
+func TestConcurrentMutationMethods(t *testing.T) {
+	inv := New("mutation race test")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+
+	// Set up some entities to mutate
+	inv.AddActor("a1", "Actor 1", models.Analyst, WithReliability(0.5))
+	inv.AddSubject("s1", "Subject 1", "company")
+	claimID := inv.AssertClaim("a1", prop("s1", "metric", "value"), mustTime(2024, 1, 1), iv)
+	evID := inv.AddEvidence(claimID, "evidence", models.Supports)
+	a, _ := inv.AnalyzeClaim(claimID)
+	finding := inv.RegisterAnalysis(a)
+
+	const N = 30
+	var wg sync.WaitGroup
+
+	// Concurrent reliability updates
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.UpdateActorReliability("a1", float64(n)/float64(N))
+		}(i)
+	}
+
+	// Concurrent conflict additions
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.AddActorConflict("a1", models.ConflictOfInterest{
+				Description: fmt.Sprintf("conflict %d", n),
+				Direction:   models.Long,
+				Disclosed:   n%2 == 0,
+			})
+		}(i)
+	}
+
+	// Concurrent notes updates
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.UpdateActorNotes("a1", fmt.Sprintf("notes %d", n))
+			inv.UpdateSubjectNotes("s1", fmt.Sprintf("notes %d", n))
+			inv.UpdateClaimNotes(claimID, fmt.Sprintf("notes %d", n))
+			inv.UpdateEvidenceNotes(evID, fmt.Sprintf("notes %d", n))
+			inv.UpdateEvidenceWeight(evID, float64(n)/float64(N))
+			inv.UpdateFindingNotes(finding.ID, fmt.Sprintf("notes %d", n))
+		}(i)
+	}
+
+	// Concurrent readers while mutations are happening
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inv.Actors()
+			inv.Claims()
+			inv.Evidence()
+			inv.Findings()
+			inv.AnalyzeClaim(claimID)
+			inv.Q("s1", "metric", iv)
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentLoadAndQuery: bulk loads racing against queries.
+func TestConcurrentLoadAndQuery(t *testing.T) {
+	inv := New("load race test")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	const N = 20
+
+	var wg sync.WaitGroup
+
+	// Concurrent LoadActors
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.LoadActors([]models.Actor{
+				{ID: fmt.Sprintf("loaded_actor_%d", n), Name: fmt.Sprintf("LA %d", n),
+					SourceType: models.Expert, BaseReliability: 0.8},
+			})
+		}(i)
+	}
+
+	// Concurrent LoadSubjects
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.LoadSubjects([]models.Subject{
+				{ID: fmt.Sprintf("loaded_subj_%d", n), Name: fmt.Sprintf("LS %d", n), SubjectType: "co"},
+			})
+		}(i)
+	}
+
+	// Concurrent LoadClaims
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.LoadClaims([]models.Claim{
+				{ID: fmt.Sprintf("loaded_claim_%d", n), ActorID: "loaded_actor_0",
+					SubjectID: "loaded_subj_0", Predicate: "p", Value: "v",
+					Content: "text", ClaimType: models.Factual,
+					AssertionTime: mustTime(2024, 1, 1), EventInterval: iv},
+			})
+		}(i)
+	}
+
+	// Concurrent LoadEvidence
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.LoadEvidence([]models.Evidence{
+				{ID: fmt.Sprintf("loaded_ev_%d", n), ClaimID: "loaded_claim_0",
+					Content: "ev", Valence: models.Supports},
+			})
+		}(i)
+	}
+
+	// Concurrent LoadFindings
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			inv.LoadFindings([]Finding{
+				{ID: fmt.Sprintf("loaded_finding_%d", n), ClaimID: "loaded_claim_0"},
+			})
+		}(i)
+	}
+
+	// Concurrent readers during all those loads
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inv.Actors()
+			inv.Subjects()
+			inv.Claims()
+			inv.Evidence()
+			inv.Findings()
+			inv.Summary()
+		}()
+	}
+
+	wg.Wait()
+
+	if got := len(inv.Actors()); got < N {
+		t.Errorf("expected at least %d loaded actors, got %d", N, got)
+	}
+}
+
+// TestConcurrentAnalyzeWithMetaClaims: recursive analysis with concurrent meta-claim creation.
+// Exercises the depth-limited MetaClaimsAbout path under contention.
+func TestConcurrentAnalyzeWithMetaClaims(t *testing.T) {
+	inv := New("meta-claim race test")
+	inv.AddActor("a", "Analyst", models.Analyst, WithReliability(0.7))
+	inv.AddActor("b", "Checker", models.Expert, WithReliability(0.85))
+	inv.AddSubject("s", "Subject", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+
+	// Create a base claim
+	baseID := inv.AssertClaim("a", prop("s", "outlook", "positive"), mustTime(2024, 1, 1), iv)
+	inv.AddEvidence(baseID, "quarterly report", models.Supports, WithWeight(0.8))
+
+	const N = 30
+	var wg sync.WaitGroup
+
+	// Goroutines adding meta-claims targeting the base claim
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			valence := models.Supports
+			if n%2 == 0 {
+				valence = models.Refutes
+			}
+			inv.AssertMetaClaim("b", baseID, "accuracy", fmt.Sprintf("v%d", n),
+				mustTime(2024, 6, 1), WithValence(valence))
+		}(i)
+	}
+
+	// Goroutines analyzing the base claim while meta-claims are being added
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// This triggers recursive analysis through MetaClaimsAbout
+			inv.AnalyzeClaim(baseID)
+		}()
+	}
+
+	// Goroutines calling Q which internally calls analyzeClaim
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inv.Q("s", "outlook", iv)
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify base claim is analyzable and has Both status (supports + refutes)
+	a, err := inv.AnalyzeClaim(baseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.SupportingCount == 0 && a.RefutingCount == 0 {
+		t.Error("expected meta-claims to have registered as supporting/refuting")
+	}
+}
+
+// TestReturnedCopiesAreIndependent: verify that values returned from accessors
+// cannot mutate internal state.
+func TestReturnedCopiesAreIndependent(t *testing.T) {
+	inv := New("copy independence test")
+	inv.AddActor("a", "Actor", models.Analyst, WithReliability(0.7),
+		WithConflict(models.ConflictOfInterest{Description: "original", Disclosed: true}))
+	inv.AddSubject("s", "Subject", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	claimID := inv.AssertClaim("a", prop("s", "metric", "value"), mustTime(2024, 1, 1), iv)
+	inv.AddEvidence(claimID, "evidence", models.Supports, WithWeight(0.8))
+
+	// Mutate returned actors
+	actors := inv.Actors()
+	actors[0].Name = "MUTATED"
+	actors[0].BaseReliability = 0.0
+	actors[0].Conflicts[0].Description = "MUTATED"
+
+	// Internal state should be unchanged
+	actors2 := inv.Actors()
+	for _, a := range actors2 {
+		if a.ID == "a" {
+			if a.Name == "MUTATED" {
+				t.Error("mutating returned Actor.Name affected internal state")
+			}
+			if a.BaseReliability == 0.0 {
+				t.Error("mutating returned Actor.BaseReliability affected internal state")
+			}
+			if len(a.Conflicts) > 0 && a.Conflicts[0].Description == "MUTATED" {
+				t.Error("mutating returned Actor.Conflicts affected internal state")
+			}
+		}
+	}
+
+	// Mutate returned claims
+	claims := inv.Claims()
+	claims[0].Notes = "MUTATED"
+	claims[0].EvidenceIDs = append(claims[0].EvidenceIDs, "injected_id")
+
+	claims2 := inv.Claims()
+	for _, c := range claims2 {
+		if c.ID == claimID {
+			if c.Notes == "MUTATED" {
+				t.Error("mutating returned Claim.Notes affected internal state")
+			}
+			if len(c.EvidenceIDs) != 1 {
+				t.Errorf("mutating returned Claim.EvidenceIDs affected internal state: len=%d", len(c.EvidenceIDs))
+			}
+		}
+	}
+
+	// Mutate returned evidence
+	evidence := inv.Evidence()
+	if len(evidence) > 0 && evidence[0].Weight != nil {
+		*evidence[0].Weight = 0.0
+	}
+
+	evidence2 := inv.Evidence()
+	for _, e := range evidence2 {
+		if e.Weight != nil && *e.Weight == 0.0 {
+			t.Error("mutating returned Evidence.Weight affected internal state")
+		}
+	}
+
+	// Mutate returned ClaimAnalysis
+	analysis, err := inv.AnalyzeClaim(claimID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Actor != nil {
+		analysis.Actor.Name = "MUTATED_ANALYSIS"
+	}
+
+	analysis2, _ := inv.AnalyzeClaim(claimID)
+	if analysis2.Actor != nil && analysis2.Actor.Name == "MUTATED_ANALYSIS" {
+		t.Error("mutating returned ClaimAnalysis.Actor affected internal state")
+	}
+
+	// Mutate returned findings
+	finding := inv.RegisterAnalysis(analysis)
+	finding.Notes = "MUTATED"
+
+	findings := inv.Findings()
+	for _, f := range findings {
+		if f.Notes == "MUTATED" {
+			t.Error("mutating returned Finding.Notes affected internal state")
+		}
+	}
+
+	// Mutate returned QueryResult.MatchedClaims
+	results := inv.Q("s", "metric", iv)
+	if len(results) > 0 && len(results[0].MatchedClaims) > 0 {
+		results[0].MatchedClaims[0].Notes = "MUTATED_Q"
+	}
+	results2 := inv.Q("s", "metric", iv)
+	if len(results2) > 0 && len(results2[0].MatchedClaims) > 0 {
+		if results2[0].MatchedClaims[0].Notes == "MUTATED_Q" {
+			t.Error("mutating returned QueryResult.MatchedClaims affected internal state")
+		}
+	}
+
+	// Mutate returned timeline
+	timeline := inv.SubjectTimeline("s")
+	if len(timeline) > 0 && len(timeline[0].Claims) > 0 {
+		timeline[0].Claims[0].Notes = "MUTATED_TL"
+	}
+	timeline2 := inv.SubjectTimeline("s")
+	if len(timeline2) > 0 && len(timeline2[0].Claims) > 0 {
+		if timeline2[0].Claims[0].Notes == "MUTATED_TL" {
+			t.Error("mutating returned TimeSlice.Claims affected internal state")
+		}
+	}
+
+	// Mutate returned belief history
+	histClaims, _ := inv.ActorBeliefHistory("a", "s")
+	if len(histClaims) > 0 {
+		histClaims[0].Notes = "MUTATED_HIST"
+	}
+	histClaims2, _ := inv.ActorBeliefHistory("a", "s")
+	if len(histClaims2) > 0 && histClaims2[0].Notes == "MUTATED_HIST" {
+		t.Error("mutating returned ActorBeliefHistory claims affected internal state")
 	}
 }

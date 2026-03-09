@@ -13,7 +13,7 @@ const maxDepth = 3
 
 // ClaimAnalysis holds the evaluated logical status and credibility of a claim.
 type ClaimAnalysis struct {
-	Claim           *models.Claim
+	Claim           models.Claim
 	Actor           *models.Actor
 	Subject         *models.Subject
 	BelnapStatus    belnap.Value
@@ -83,6 +83,7 @@ func (a *ClaimAnalysis) FiveQuestions() string {
 }
 
 // analyzeClaim is the depth-limited recursive credibility computation.
+// Caller must hold at least RLock.
 func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysis, error) {
 	// If this ID refers to a registered Finding, return its already-computed
 	// result directly rather than recomputing. This is the entry point for
@@ -152,7 +153,7 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 
 	// Step 4: Meta-claims as evidence (depth-limited)
 	if depth < maxDepth {
-		for _, meta := range inv.MetaClaimsAbout(claimID) {
+		for _, meta := range inv.metaClaimsAbout(claimID) {
 			metaAnalysis, err := inv.analyzeClaim(meta.ID, depth+1)
 			if err != nil {
 				continue
@@ -194,10 +195,23 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 		}
 	}
 
+	// Clone entities for the return value to prevent aliasing
+	clonedClaim := c.Clone()
+	var clonedActor *models.Actor
+	if actor != nil {
+		a := actor.Clone()
+		clonedActor = &a
+	}
+	var clonedSubject *models.Subject
+	if subject != nil {
+		s := subject.Clone()
+		clonedSubject = &s
+	}
+
 	return &ClaimAnalysis{
-		Claim:           c,
-		Actor:           actor,
-		Subject:         subject,
+		Claim:           clonedClaim,
+		Actor:           clonedActor,
+		Subject:         clonedSubject,
 		BelnapStatus:    belnapStatus,
 		Credibility:     credibility,
 		SupportingCount: supporting,

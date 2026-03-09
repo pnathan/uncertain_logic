@@ -217,6 +217,42 @@ type Claim struct {
 	Notes             string
 }
 
+// Clone returns a deep copy of the Actor.
+func (a Actor) Clone() Actor {
+	clone := a
+	if len(a.Conflicts) > 0 {
+		clone.Conflicts = make([]ConflictOfInterest, len(a.Conflicts))
+		copy(clone.Conflicts, a.Conflicts)
+	}
+	return clone
+}
+
+// Clone returns a deep copy of the Subject.
+func (s Subject) Clone() Subject {
+	return s
+}
+
+// Clone returns a deep copy of the Evidence.
+func (e Evidence) Clone() Evidence {
+	clone := e
+	if e.Weight != nil {
+		w := *e.Weight
+		clone.Weight = &w
+	}
+	return clone
+}
+
+// Clone returns a deep copy of the Claim.
+func (c Claim) Clone() Claim {
+	clone := c
+	if len(c.EvidenceIDs) > 0 {
+		clone.EvidenceIDs = make([]string, len(c.EvidenceIDs))
+		copy(clone.EvidenceIDs, c.EvidenceIDs)
+	}
+	clone.EventInterval = c.EventInterval.Clone()
+	return clone
+}
+
 // ToProposition extracts the Proposition from a Claim.
 func (c *Claim) ToProposition() Proposition {
 	subj := c.SubjectID
