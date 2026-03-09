@@ -13,14 +13,16 @@ const maxDepth = 3
 
 // ClaimAnalysis holds the evaluated logical status and credibility of a claim.
 type ClaimAnalysis struct {
-	Claim           models.Claim
-	Actor           *models.Actor
-	Subject         *models.Subject
-	BelnapStatus    belnap.Value
-	Credibility     subjective.Opinion
-	SupportingCount int
-	RefutingCount   int
-	NeutralCount    int
+	Claim            models.Claim
+	Actor            *models.Actor
+	Subject          *models.Subject
+	BelnapStatus     belnap.Value
+	Credibility      subjective.Opinion
+	SupportingCount  int
+	RefutingCount    int
+	NeutralCount     int
+	PositiveEvidence float64 // r: weighted positive evidence count
+	NegativeEvidence float64 // s: weighted negative evidence count
 }
 
 // FiveQuestions prints a structured answer to the five investigative questions.
@@ -69,8 +71,8 @@ func (a *ClaimAnalysis) FiveQuestions() string {
 	ep := a.Credibility.ExpectedProbability()
 	sb.WriteString(fmt.Sprintf("Q5 (Credibility): Belnap=%s, E[p]=%.3f (b=%.3f d=%.3f u=%.3f)\n",
 		a.BelnapStatus, ep, a.Credibility.Belief, a.Credibility.Disbelief, a.Credibility.Uncertainty))
-	sb.WriteString(fmt.Sprintf("   Evidence: %d supporting, %d refuting, %d neutral\n",
-		a.SupportingCount, a.RefutingCount, a.NeutralCount))
+	sb.WriteString(fmt.Sprintf("   Evidence: %d supporting, %d refuting, %d neutral (r=%.2f, s=%.2f)\n",
+		a.SupportingCount, a.RefutingCount, a.NeutralCount, a.PositiveEvidence, a.NegativeEvidence))
 
 	if a.Actor != nil {
 		subjectID := a.Claim.SubjectID
@@ -91,11 +93,13 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	// meta-claim.
 	if f, ok := inv.findings[claimID]; ok {
 		return &ClaimAnalysis{
-			BelnapStatus:    f.BelnapStatus,
-			Credibility:     f.Credibility,
-			SupportingCount: f.SupportingCount,
-			RefutingCount:   f.RefutingCount,
-			NeutralCount:    f.NeutralCount,
+			BelnapStatus:     f.BelnapStatus,
+			Credibility:      f.Credibility,
+			SupportingCount:  f.SupportingCount,
+			RefutingCount:    f.RefutingCount,
+			NeutralCount:     f.NeutralCount,
+			PositiveEvidence: f.PositiveEvidence,
+			NegativeEvidence: f.NegativeEvidence,
 		}, nil
 	}
 
@@ -125,10 +129,66 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	}
 	actorOpinion := subjective.TrustDiscount(trust, actorAssertion)
 
-	// Step 3: Accumulate evidence opinions
-	var evidenceOpinions []subjective.Opinion
+	// Step 3: Count evidence items for Belnap status
 	supporting, refuting, neutral := 0, 0, 0
+	for _, evID := range c.EvidenceIDs {
+		ev, ok := inv.evidence[evID]
+		if !ok {
+			continue
+		}
+		switch ev.Valence {
+		case models.Supports:
+			supporting++
+		case models.Refutes:
+			refuting++
+		case models.Neutral:
+			neutral++
+		}
+	}
 
+	// D1: Dogmatic actors short-circuit — facts are axioms, not evidence.
+	// Josang (2016) §3.4: dogmatic = infinite evidence.
+	if actorOpinion.Uncertainty == 0 {
+		belnapStatus := belnap.FromCounts(supporting, refuting)
+		if supporting == 0 && refuting == 0 {
+			if c.Valence == models.Refutes {
+				belnapStatus = belnap.False
+			} else {
+				belnapStatus = belnap.True
+			}
+		}
+
+		clonedClaim := c.Clone()
+		var clonedActor *models.Actor
+		if actor != nil {
+			a := actor.Clone()
+			clonedActor = &a
+		}
+		var clonedSubject *models.Subject
+		if subject != nil {
+			s := subject.Clone()
+			clonedSubject = &s
+		}
+
+		return &ClaimAnalysis{
+			Claim:            clonedClaim,
+			Actor:            clonedActor,
+			Subject:          clonedSubject,
+			BelnapStatus:     belnapStatus,
+			Credibility:      actorOpinion,
+			SupportingCount:  supporting,
+			RefutingCount:    refuting,
+			NeutralCount:     neutral,
+			PositiveEvidence: 0,
+			NegativeEvidence: 0,
+		}, nil
+	}
+
+	// D2: Inverse-map actor opinion to evidence counts.
+	// r = W·b/u, s = W·d/u per Josang (2016) Ch. 3 inverse bijection.
+	r, s := subjective.EvidenceCounts(actorOpinion)
+
+	// Step 4: Accumulate weighted evidence counts
 	for _, evID := range c.EvidenceIDs {
 		ev, ok := inv.evidence[evID]
 		if !ok {
@@ -137,51 +197,48 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 		w := ev.EffectiveWeight()
 		switch ev.Valence {
 		case models.Supports:
-			supporting++
-			evidenceOpinions = append(evidenceOpinions, subjective.Opinion{
-				Belief: w, Disbelief: 0, Uncertainty: 1 - w, BaseRate: inv.BaseRate,
-			})
+			r += w
 		case models.Refutes:
-			refuting++
-			evidenceOpinions = append(evidenceOpinions, subjective.Opinion{
-				Belief: 0, Disbelief: w, Uncertainty: 1 - w, BaseRate: inv.BaseRate,
-			})
-		case models.Neutral:
-			neutral++
+			s += w
 		}
 	}
 
-	// Step 4: Meta-claims as evidence (depth-limited)
+	// Step 5: D5 Meta-claims: trust-discount on evidence counts (depth-limited).
+	// EBSL analogy (Josang & Ismail 2002) extended to recursive chains.
 	if depth < maxDepth {
 		for _, meta := range inv.metaClaimsAbout(claimID) {
 			metaAnalysis, err := inv.analyzeClaim(meta.ID, depth+1)
 			if err != nil {
 				continue
 			}
-			ep := metaAnalysis.Credibility.ExpectedProbability()
+			// Meta-actor's adjusted reliability as trust factor
+			metaActor := inv.actors[meta.ActorID]
+			var trustFactor float64
+			if metaActor != nil {
+				trustFactor = metaActor.AdjustedReliability(c.SubjectID)
+			}
+
+			// Dogmatic meta-claims contribute nothing (r=0, s=0 from short-circuit)
+			rMeta := metaAnalysis.PositiveEvidence
+			sMeta := metaAnalysis.NegativeEvidence
+
 			switch meta.Valence {
 			case models.Supports:
 				supporting++
-				evidenceOpinions = append(evidenceOpinions, subjective.Opinion{
-					Belief: ep, Disbelief: 0, Uncertainty: 1 - ep, BaseRate: inv.BaseRate,
-				})
+				r += trustFactor * rMeta
+				s += trustFactor * sMeta
 			case models.Refutes:
 				refuting++
-				evidenceOpinions = append(evidenceOpinions, subjective.Opinion{
-					Belief: 0, Disbelief: ep, Uncertainty: 1 - ep, BaseRate: inv.BaseRate,
-				})
+				r += trustFactor * sMeta
+				s += trustFactor * rMeta
 			}
 		}
 	}
 
-	// Step 5: Fuse all opinions
-	allOpinions := append([]subjective.Opinion{actorOpinion}, evidenceOpinions...)
-	credibility := subjective.ConsensusFuse(allOpinions...)
+	// Step 6: Build credibility opinion from accumulated evidence counts.
+	credibility := subjective.OpinionFromEvidence(r, s, inv.BaseRate)
 
-	// Step 6: Belnap status from evidence.
-	// Per Belnap (1977), the four values {T,F,N,B} track what the evidence
-	// base tells us. With no evidence, a reliable actor's assertion alone
-	// provides one piece of information whose polarity depends on Valence.
+	// Step 7: Belnap status from evidence.
 	belnapStatus := belnap.FromCounts(supporting, refuting)
 	if supporting == 0 && refuting == 0 {
 		if adjustedReliability > 0.5 {
@@ -209,13 +266,15 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	}
 
 	return &ClaimAnalysis{
-		Claim:           clonedClaim,
-		Actor:           clonedActor,
-		Subject:         clonedSubject,
-		BelnapStatus:    belnapStatus,
-		Credibility:     credibility,
-		SupportingCount: supporting,
-		RefutingCount:   refuting,
-		NeutralCount:    neutral,
+		Claim:            clonedClaim,
+		Actor:            clonedActor,
+		Subject:          clonedSubject,
+		BelnapStatus:     belnapStatus,
+		Credibility:      credibility,
+		SupportingCount:  supporting,
+		RefutingCount:    refuting,
+		NeutralCount:     neutral,
+		PositiveEvidence: r,
+		NegativeEvidence: s,
 	}, nil
 }

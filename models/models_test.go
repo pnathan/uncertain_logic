@@ -232,10 +232,10 @@ func TestClaimClone(t *testing.T) {
 }
 
 func TestEffectiveWeight(t *testing.T) {
-	// nil weight → default 0.6
+	// nil weight → default 1.0
 	e := &Evidence{}
-	if w := e.EffectiveWeight(); w != 0.6 {
-		t.Errorf("nil weight should default to 0.6, got %v", w)
+	if w := e.EffectiveWeight(); w != 1.0 {
+		t.Errorf("nil weight should default to 1.0, got %v", w)
 	}
 
 	// explicit weight

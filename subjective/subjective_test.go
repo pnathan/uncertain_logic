@@ -233,6 +233,129 @@ func TestCBFBaseRateConfidenceWeighted(t *testing.T) {
 	}
 }
 
+func TestOpinionFromEvidence(t *testing.T) {
+	// Property 1: OFE(6, 0, 0.5).EP() == 0.875
+	o := OpinionFromEvidence(6, 0, 0.5)
+	if !approx(o.ExpectedProbability(), 0.875) {
+		t.Errorf("OFE(6,0,0.5).EP() = %v, want 0.875", o.ExpectedProbability())
+	}
+
+	// Property 2: OFE(0, 0, 0.5) == Vacuous(0.5)
+	vac := OpinionFromEvidence(0, 0, 0.5)
+	want := Vacuous(0.5)
+	if !approx(vac.Belief, want.Belief) || !approx(vac.Disbelief, want.Disbelief) || !approx(vac.Uncertainty, want.Uncertainty) {
+		t.Errorf("OFE(0,0,0.5) = %+v, want Vacuous", vac)
+	}
+
+	// b+d+u=1
+	sum := o.Belief + o.Disbelief + o.Uncertainty
+	if !approx(sum, 1.0) {
+		t.Errorf("b+d+u = %v, want 1", sum)
+	}
+
+	// Negative clamping
+	neg := OpinionFromEvidence(-5, -3, 0.5)
+	if !approx(neg.Belief, 0) || !approx(neg.Disbelief, 0) || !approx(neg.Uncertainty, 1) {
+		t.Errorf("OFE(-5,-3,0.5) = %+v, want Vacuous", neg)
+	}
+}
+
+func TestEvidenceCountsRoundtrip(t *testing.T) {
+	cases := []struct {
+		r, s float64
+	}{
+		{1, 0},
+		{0, 1},
+		{3, 2},
+		{0.5, 0.5},
+		{10, 5},
+	}
+	for _, c := range cases {
+		o := OpinionFromEvidence(c.r, c.s, 0.5)
+		gotR, gotS := EvidenceCounts(o)
+		if !approx(gotR, c.r) || !approx(gotS, c.s) {
+			t.Errorf("roundtrip(%v,%v): got (%v,%v)", c.r, c.s, gotR, gotS)
+		}
+	}
+}
+
+func TestEvidenceCountsDogmatic(t *testing.T) {
+	r, s := EvidenceCounts(DogmaticTrue(0.5))
+	if !math.IsInf(r, 1) || s != 0 {
+		t.Errorf("DogmaticTrue evidence: r=%v, s=%v, want (+Inf, 0)", r, s)
+	}
+	r, s = EvidenceCounts(DogmaticFalse(0.5))
+	if r != 0 || !math.IsInf(s, 1) {
+		t.Errorf("DogmaticFalse evidence: r=%v, s=%v, want (0, +Inf)", r, s)
+	}
+}
+
+func TestCBFEvidenceAdditivity(t *testing.T) {
+	// CBF(OFE(r1,s1), OFE(r2,s2)) ≈ OFE(r1+r2, s1+s2)
+	r1, s1 := 3.0, 1.0
+	r2, s2 := 2.0, 4.0
+	o1 := OpinionFromEvidence(r1, s1, 0.5)
+	o2 := OpinionFromEvidence(r2, s2, 0.5)
+	fused := ConsensusFuse(o1, o2)
+	direct := OpinionFromEvidence(r1+r2, s1+s2, 0.5)
+	if !approx(fused.Belief, direct.Belief) || !approx(fused.Disbelief, direct.Disbelief) || !approx(fused.Uncertainty, direct.Uncertainty) {
+		t.Errorf("CBF additivity failed:\n  fused=%+v\n  direct=%+v", fused, direct)
+	}
+}
+
+func TestAveragingFuseIdempotent(t *testing.T) {
+	o := Opinion{0.4, 0.2, 0.4, 0.5}
+	fused2 := AveragingFuse(o, o)
+	if !approx(fused2.Belief, o.Belief) || !approx(fused2.Disbelief, o.Disbelief) || !approx(fused2.Uncertainty, o.Uncertainty) {
+		t.Errorf("ABF(o,o) = %+v, want %+v", fused2, o)
+	}
+	fused3 := AveragingFuse(o, o, o)
+	if !approx(fused3.Belief, o.Belief) || !approx(fused3.Disbelief, o.Disbelief) || !approx(fused3.Uncertainty, o.Uncertainty) {
+		t.Errorf("ABF(o,o,o) = %+v, want %+v", fused3, o)
+	}
+}
+
+func TestAveragingFuseVsCBF(t *testing.T) {
+	o1 := Opinion{0.3, 0.1, 0.6, 0.5}
+	o2 := Opinion{0.4, 0.1, 0.5, 0.5}
+	abf := AveragingFuse(o1, o2)
+	cbf := ConsensusFuse(o1, o2)
+	// ABF preserves more uncertainty than CBF
+	if abf.Uncertainty <= cbf.Uncertainty {
+		t.Errorf("ABF uncertainty %.4f should be > CBF uncertainty %.4f", abf.Uncertainty, cbf.Uncertainty)
+	}
+}
+
+func TestAveragingFuseEdgeCases(t *testing.T) {
+	// Empty → Vacuous
+	empty := AveragingFuse()
+	if !approx(empty.Uncertainty, 1) {
+		t.Errorf("ABF() should be vacuous: %+v", empty)
+	}
+
+	// Single → identity
+	o := Opinion{0.5, 0.2, 0.3, 0.5}
+	single := AveragingFuse(o)
+	if !approx(single.Belief, o.Belief) || !approx(single.Disbelief, o.Disbelief) {
+		t.Errorf("ABF(single) = %+v, want %+v", single, o)
+	}
+
+	// Both dogmatic → average
+	d1 := DogmaticTrue(0.5)
+	d2 := DogmaticFalse(0.5)
+	avg := AveragingFuse(d1, d2)
+	if !approx(avg.Belief, 0.5) || !approx(avg.Disbelief, 0.5) {
+		t.Errorf("ABF(dogT, dogF) = %+v, want average", avg)
+	}
+
+	// One dogmatic → dominates
+	vac := Vacuous(0.5)
+	dom := AveragingFuse(vac, DogmaticTrue(0.5))
+	if !approx(dom.Belief, 1) {
+		t.Errorf("ABF(vac, dogT) = %+v, want dogmatic true to dominate", dom)
+	}
+}
+
 func TestNegate(t *testing.T) {
 	o := Opinion{0.6, 0.2, 0.2, 0.3}
 	n := Negate(o)

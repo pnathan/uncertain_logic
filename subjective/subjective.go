@@ -2,6 +2,11 @@ package subjective
 
 import "math"
 
+// W is the non-informative prior weight corresponding to a Beta(1,1)
+// uniform prior. Per Josang (2016) Ch. 3, W=2 maps evidence counts
+// to/from opinions via the beta-binomial bijection.
+const W = 2.0
+
 // Opinion represents a subjective logic opinion triple with base rate.
 // Invariant: Belief + Disbelief + Uncertainty = 1.0
 type Opinion struct {
@@ -188,6 +193,110 @@ func fuseTwo(a, b Opinion) Opinion {
 	uncertainty := (a.Uncertainty * b.Uncertainty) / denom
 	// Confidence-weighted base rate: each source's base rate is weighted by
 	// its confidence (1−u). Per Jøsang (2016) §12.6.
+	confA := 1 - a.Uncertainty
+	confB := 1 - b.Uncertainty
+	confSum := confA + confB
+	var baseRate float64
+	if confSum < 1e-12 {
+		baseRate = (a.BaseRate + b.BaseRate) / 2
+	} else {
+		baseRate = (a.BaseRate*confA + b.BaseRate*confB) / confSum
+	}
+	return Opinion{belief, disbelief, uncertainty, baseRate}
+}
+
+// OpinionFromEvidence constructs an opinion from positive (r) and negative (s)
+// evidence counts using the beta-binomial bijection.
+// total = r + s + W; b = r/total, d = s/total, u = W/total.
+// Negative r or s values are clamped to 0.
+//
+// Reference: Josang (2016) Ch. 3, Definition 3.2.
+func OpinionFromEvidence(r, s, baseRate float64) Opinion {
+	if r < 0 {
+		r = 0
+	}
+	if s < 0 {
+		s = 0
+	}
+	total := r + s + W
+	return Opinion{
+		Belief:      r / total,
+		Disbelief:   s / total,
+		Uncertainty: W / total,
+		BaseRate:    baseRate,
+	}
+}
+
+// EvidenceCounts returns the positive (r) and negative (s) evidence counts
+// implied by an opinion, inverting the beta-binomial bijection.
+// r = W * b / u, s = W * d / u.
+// For dogmatic opinions (u=0), returns (+Inf, 0) or (0, +Inf) depending
+// on whether belief or disbelief dominates.
+//
+// Reference: Josang (2016) Ch. 3, inverse bijection.
+func EvidenceCounts(o Opinion) (r, s float64) {
+	if o.Uncertainty == 0 {
+		if o.Belief >= o.Disbelief {
+			return math.Inf(1), 0
+		}
+		return 0, math.Inf(1)
+	}
+	return W * o.Belief / o.Uncertainty, W * o.Disbelief / o.Uncertainty
+}
+
+// AveragingFuse combines dependent opinions using Averaging Belief Fusion (ABF).
+// ABF is idempotent: fusing an opinion with itself returns the same opinion.
+// Use ABF for dependent sources (e.g. same actor repeating a claim).
+//
+// Reference: Josang, Diaz & Rifqi (2010) §4, Eq. 16.
+func AveragingFuse(opinions ...Opinion) Opinion {
+	if len(opinions) == 0 {
+		return Vacuous(0.5)
+	}
+	if len(opinions) == 1 {
+		return opinions[0]
+	}
+	result := opinions[0]
+	for i := 1; i < len(opinions); i++ {
+		result = abfTwo(result, opinions[i])
+	}
+	return result
+}
+
+// abfTwo implements pairwise Averaging Belief Fusion.
+//
+// Reference: Josang, Diaz & Rifqi (2010) §4.
+func abfTwo(a, b Opinion) Opinion {
+	// Both dogmatic: weighted average with equal weights.
+	if a.Uncertainty == 0 && b.Uncertainty == 0 {
+		return Opinion{
+			Belief:      (a.Belief + b.Belief) / 2,
+			Disbelief:   (a.Disbelief + b.Disbelief) / 2,
+			Uncertainty: 0,
+			BaseRate:    (a.BaseRate + b.BaseRate) / 2,
+		}
+	}
+	// One dogmatic: dominates (infinite evidence).
+	if a.Uncertainty == 0 {
+		return a
+	}
+	if b.Uncertainty == 0 {
+		return b
+	}
+
+	// Normal case: ABF (Eq. 16).
+	// K_a = u_b, K_b = u_a (for n=2, K_k = product of u_j for j != k)
+	// denom = u_a + u_b
+	denom := a.Uncertainty + b.Uncertainty
+	if math.Abs(denom) < 1e-12 {
+		return Vacuous((a.BaseRate + b.BaseRate) / 2)
+	}
+
+	belief := (a.Belief*b.Uncertainty + b.Belief*a.Uncertainty) / denom
+	disbelief := (a.Disbelief*b.Uncertainty + b.Disbelief*a.Uncertainty) / denom
+	uncertainty := 2 * a.Uncertainty * b.Uncertainty / denom
+
+	// Confidence-weighted base rate.
 	confA := 1 - a.Uncertainty
 	confB := 1 - b.Uncertainty
 	confSum := confA + confB
