@@ -694,6 +694,71 @@ func TestSubjectTimelineOverlappingConcrete(t *testing.T) {
 	}
 }
 
+// TestRefutingClaimValenceProducesDisbelief: a claim with Valence=Refutes should
+// produce E[p] < 0.5, because the actor prior now starts from DogmaticFalse.
+func TestRefutingClaimValenceProducesDisbelief(t *testing.T) {
+	inv := New("refuting valence test")
+	inv.AddActor("sec", "SEC", models.Regulator, WithReliability(0.95))
+	inv.AddSubject("co", "Company", "company")
+
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	// Bearish claim: asserts the "positive" proposition is false.
+	bearishID := inv.AssertClaim("sec", prop("co", "outlook", "positive"), now, iv,
+		WithValence(models.Refutes))
+	inv.AddEvidence(bearishID, "Revenue declined 40% YoY", models.Refutes, WithWeight(0.8))
+
+	// Bullish claim: asserts the "positive" proposition is true (default).
+	bullishID := inv.AssertClaim("sec", prop("co", "outlook", "positive"), now, iv)
+	inv.AddEvidence(bullishID, "Revenue grew 40% YoY", models.Supports, WithWeight(0.8))
+
+	bearish, err := inv.AnalyzeClaim(bearishID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bullish, err := inv.AnalyzeClaim(bullishID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bearishEP := bearish.Credibility.ExpectedProbability()
+	bullishEP := bullish.Credibility.ExpectedProbability()
+
+	if bearishEP >= 0.5 {
+		t.Errorf("bearish claim E[p]=%.3f, want < 0.5", bearishEP)
+	}
+	if bullishEP <= 0.5 {
+		t.Errorf("bullish claim E[p]=%.3f, want > 0.5", bullishEP)
+	}
+	if bearishEP >= bullishEP {
+		t.Errorf("bearish E[p]=%.3f should be less than bullish E[p]=%.3f", bearishEP, bullishEP)
+	}
+}
+
+// TestRefutingValenceNoEvidenceStillBearish: a Refutes-valence claim with no evidence
+// should still lean bearish (E[p] < 0.5) rather than defaulting to bullish.
+func TestRefutingValenceNoEvidenceStillBearish(t *testing.T) {
+	inv := New("refuting no-evidence test")
+	inv.AddActor("sec", "SEC", models.Regulator, WithReliability(0.95))
+	inv.AddSubject("co", "Company", "company")
+
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	id := inv.AssertClaim("sec", prop("co", "outlook", "positive"), now, iv,
+		WithValence(models.Refutes))
+
+	a, err := inv.AnalyzeClaim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := a.Credibility.ExpectedProbability()
+	if ep >= 0.5 {
+		t.Errorf("refuting claim with no evidence: E[p]=%.3f, want < 0.5", ep)
+	}
+}
+
 // TestDanglingEvidenceID: a claim referencing a non-loaded evidence ID gracefully skips it.
 func TestDanglingEvidenceID(t *testing.T) {
 	inv := New("dangling evidence test")
