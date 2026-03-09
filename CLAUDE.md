@@ -26,7 +26,7 @@ No external dependencies — pure stdlib. Go 1.22 required.
 
 **`temporal/`** — Allen's 13 interval relations. `Relate(a,b)` returns the relation; `Overlapping(a,b)` gates whether claims temporally conflict. `Open(desc)` creates a conservative interval that overlaps everything.
 
-**`models/`** — Domain entities: `Actor` (source with reliability), `Subject`, `Claim`, `Evidence`, `Proposition`, `ConflictOfInterest`. Eight source types (`Analyst`, `Journalist`, `Expert`, etc.) have default reliabilities. `ConflictOfInterest` discounts reliability (disclosed ×0.80, undisclosed ×0.50).
+**`models/`** — Domain entities: `Actor` (source with reliability), `Subject`, `Claim`, `Evidence`, `Proposition`, `ConflictOfInterest`. Nine source types (`Analyst`, `Journalist`, `Expert`, `Insider`, `Regulator`, `Institutional`, `Anonymous`, `SocialMedia`, `Troll`) all default to reliability 0.6. `ConflictOfInterest` discounts reliability (disclosed ×0.80, undisclosed ×0.50).
 
 **`investigation/`** — Orchestrates the other three packages via a builder/DSL. This is the primary user-facing API.
 
@@ -36,20 +36,20 @@ No external dependencies — pure stdlib. Go 1.22 required.
 inv := investigation.New("research question")
 inv.AddActor(id, name, sourceType, opts...)   // WithReliability(float64)
 inv.AddSubject(id, name, type)
-claimID := inv.AssertClaim(actorID, prop, assertionTime, interval)
-inv.AssertMetaClaim(actorID, targetClaimID, predicate, value, time)  // attribution chains
-inv.AssertFact(prop, interval)               // ground truth, reliability=1.0
+claimID := inv.AssertClaim(actorID, prop, assertionTime, interval, opts...)
+inv.AssertMetaClaim(actorID, targetClaimID, predicate, value, time, opts...)
+inv.AssertFact(prop, interval, opts...)       // ground truth, reliability=1.0
 inv.AddEvidence(claimID, content, valence, opts...)  // WithWeight(float64)
 
 // Query & analyze
 results := inv.Q(subjectID, predicate, interval)
-analysis, _ := inv.AnalyzeClaim(claimID)
+analysis, err := inv.AnalyzeClaim(claimID)
 fmt.Println(analysis.FiveQuestions())        // structured five-part answer
 
-// Logical ops on QueryResults
-combined := inv.And(results1, results2)
-combined := inv.Or(results1, results2)
-negated := inv.Not(results)
+// Logical ops on QueryResults (package-level functions, not methods)
+combined := investigation.And(result1, result2)
+combined := investigation.Or(result1, result2)
+negated := investigation.Not(result)
 
 // Timeline views
 inv.SubjectTimeline(subjectID)               // claims grouped by temporal overlap
