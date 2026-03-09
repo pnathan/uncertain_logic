@@ -384,14 +384,16 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 	}
 
 	// Compute composite result
-	var opinions []subjective.Opinion
+	// D3: ABF within same actor, CBF across actors.
+	// Josang, Diaz & Rifqi (2010) §3-4: CBF for independent, ABF for dependent sources.
+	actorOpinions := make(map[string][]subjective.Opinion)
 	supportCount, refuteCount := 0, 0
 	for _, c := range matched {
 		analysis, err := inv.analyzeClaim(c.ID, 0)
 		if err != nil {
 			continue
 		}
-		opinions = append(opinions, analysis.Credibility)
+		actorOpinions[c.ActorID] = append(actorOpinions[c.ActorID], analysis.Credibility)
 		switch analysis.BelnapStatus {
 		case belnap.True:
 			supportCount++
@@ -405,8 +407,14 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 
 	status := belnap.FromCounts(supportCount, refuteCount)
 	var fusedOpinion subjective.Opinion
-	if len(opinions) > 0 {
-		fusedOpinion = subjective.ConsensusFuse(opinions...)
+	if len(actorOpinions) > 0 {
+		// Within each actor: ABF (idempotent, same-source dependency)
+		var perActorFused []subjective.Opinion
+		for _, group := range actorOpinions {
+			perActorFused = append(perActorFused, subjective.AveragingFuse(group...))
+		}
+		// Across actors: CBF (independent sources)
+		fusedOpinion = subjective.ConsensusFuse(perActorFused...)
 	} else {
 		fusedOpinion = subjective.Vacuous(inv.BaseRate)
 	}

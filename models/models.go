@@ -170,16 +170,17 @@ type Evidence struct {
 	SourceURL         string
 	SourceDescription string
 	SourceClaimID     string   // if this evidence is itself a Claim in the system
-	Weight            *float64 // nil → default 0.6
+	Weight            *float64 // nil → default 1.0 (1 evidence = 1 observation)
 	Notes             string
 }
 
-// EffectiveWeight returns the evidence weight (default 0.6).
+// EffectiveWeight returns the evidence weight, defaulting to 1.0.
+// Weight acts as a strength multiplier: 1 evidence item = 1 observation.
 func (e *Evidence) EffectiveWeight() float64 {
 	if e.Weight != nil {
 		return *e.Weight
 	}
-	return 0.6
+	return 1.0
 }
 
 // Proposition is the logical unit of a claim: what is being asserted.

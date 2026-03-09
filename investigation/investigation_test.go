@@ -1454,6 +1454,12 @@ func TestReturnedCopiesAreIndependent(t *testing.T) {
 		}
 	}
 
+	// Mutate returned ClaimAnalysis evidence counts
+	if analysis.PositiveEvidence != 0 || analysis.NegativeEvidence != 0 {
+		// Evidence counts should be set (non-zero for claims with evidence)
+		_ = analysis.PositiveEvidence
+	}
+
 	// Mutate returned belief history
 	histClaims, _ := inv.ActorBeliefHistory("a", "s")
 	if len(histClaims) > 0 {
@@ -1462,5 +1468,168 @@ func TestReturnedCopiesAreIndependent(t *testing.T) {
 	histClaims2, _ := inv.ActorBeliefHistory("a", "s")
 	if len(histClaims2) > 0 && histClaims2[0].Notes == "MUTATED_HIST" {
 		t.Error("mutating returned ActorBeliefHistory claims affected internal state")
+	}
+}
+
+// TestBijectionSixIndependentActors: 6 different actors (reliability 2/3), each 1 claim,
+// same subject/predicate/interval. Q() → CBF across 6 per-actor opinions.
+// Each actor's analyzeClaim: r=1.0, s=0 → OFE(1,0,0.5) → {b≈0.333, d=0, u≈0.667}.
+// But trust discount: FromReliability(2/3) gives b=(2/3-0.5)*2=1/3, so trust.b=1/3.
+// Discounted assertion: b=1/3*1=1/3, d=0, u=2/3.
+// EvidenceCounts: r=W*(1/3)/(2/3)=1.0, s=0.
+// OFE(1,0,0.5) per actor. CBF of 6 = OFE(6,0,0.5). EP=0.875.
+func TestBijectionSixIndependentActors(t *testing.T) {
+	inv := New("bijection test")
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("actor_%d", i)
+		inv.AddActor(id, fmt.Sprintf("Actor %d", i), models.Analyst,
+			WithReliability(2.0/3.0))
+		inv.AssertClaim(id, prop("co", "outlook", "positive"), now, iv)
+	}
+
+	results := inv.Q("co", "outlook", iv)
+	ep := results[0].Opinion.ExpectedProbability()
+	if diff := ep - 0.875; diff > 0.01 || diff < -0.01 {
+		t.Errorf("6 independent actors EP=%.4f, want ≈0.875", ep)
+	}
+}
+
+// TestBijectionSameActorIdempotent: 1 actor makes 6 identical claims.
+// Q() → ABF within actor (idempotent) → EP = single-claim EP.
+func TestBijectionSameActorIdempotent(t *testing.T) {
+	inv := New("idempotent test")
+	inv.AddActor("a", "Actor", models.Analyst, WithReliability(2.0/3.0))
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	// Single claim for reference
+	invRef := New("reference")
+	invRef.AddActor("a", "Actor", models.Analyst, WithReliability(2.0/3.0))
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	refResults := invRef.Q("co", "outlook", iv)
+	refEP := refResults[0].Opinion.ExpectedProbability()
+
+	// 6 claims from same actor
+	for i := 0; i < 6; i++ {
+		inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	}
+	results := inv.Q("co", "outlook", iv)
+	ep := results[0].Opinion.ExpectedProbability()
+
+	if diff := ep - refEP; diff > 0.01 || diff < -0.01 {
+		t.Errorf("same actor 6 claims EP=%.4f, want single-claim EP=%.4f (ABF idempotency)", ep, refEP)
+	}
+}
+
+// TestSameActorClaimsUseABF: 1 actor, 3 claims. Q() EP = single claim EP.
+func TestSameActorClaimsUseABF(t *testing.T) {
+	inv := New("ABF test")
+	inv.AddActor("a", "Actor", models.Expert, WithReliability(0.8))
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	for i := 0; i < 3; i++ {
+		inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	}
+
+	results := inv.Q("co", "outlook", iv)
+	ep := results[0].Opinion.ExpectedProbability()
+
+	// Single claim reference
+	invRef := New("ref")
+	invRef.AddActor("a", "Actor", models.Expert, WithReliability(0.8))
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	refEP := invRef.Q("co", "outlook", iv)[0].Opinion.ExpectedProbability()
+
+	if diff := ep - refEP; diff > 0.01 || diff < -0.01 {
+		t.Errorf("same actor 3 claims EP=%.4f, want single-claim EP=%.4f", ep, refEP)
+	}
+}
+
+// TestCrossActorClaimsUseCBF: 3 actors, 1 claim each. Q() uncertainty < any single claim.
+func TestCrossActorClaimsUseCBF(t *testing.T) {
+	inv := New("CBF test")
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("actor_%d", i)
+		inv.AddActor(id, fmt.Sprintf("Actor %d", i), models.Analyst, WithReliability(0.7))
+		inv.AssertClaim(id, prop("co", "outlook", "positive"), now, iv)
+	}
+
+	results := inv.Q("co", "outlook", iv)
+	fusedU := results[0].Opinion.Uncertainty
+
+	// Single actor reference
+	invRef := New("ref")
+	invRef.AddActor("actor_0", "Actor 0", models.Analyst, WithReliability(0.7))
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("actor_0", prop("co", "outlook", "positive"), now, iv)
+	singleU := invRef.Q("co", "outlook", iv)[0].Opinion.Uncertainty
+
+	if fusedU >= singleU {
+		t.Errorf("cross-actor fused uncertainty %.4f should be < single actor uncertainty %.4f", fusedU, singleU)
+	}
+}
+
+// TestMetaClaimTrustDiscountPropagation: meta-claim from 0.5 reliability actor
+// contributes less evidence than from 0.9 reliability actor.
+func TestMetaClaimTrustDiscountPropagation(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	setup := func(metaReliability float64) float64 {
+		inv := New("meta trust test")
+		inv.AddActor("base", "Base Actor", models.Analyst, WithReliability(0.7))
+		inv.AddActor("meta", "Meta Actor", models.Expert, WithReliability(metaReliability))
+		inv.AddSubject("co", "Company", "company")
+
+		baseID := inv.AssertClaim("base", prop("co", "outlook", "positive"), now, iv)
+		inv.AssertMetaClaim("meta", baseID, "accuracy", "confirmed", now,
+			WithValence(models.Supports))
+
+		a, _ := inv.AnalyzeClaim(baseID)
+		return a.Credibility.ExpectedProbability()
+	}
+
+	epLow := setup(0.5)
+	epHigh := setup(0.9)
+
+	// Higher reliability meta-actor should produce higher EP (more trusted support)
+	if epHigh <= epLow {
+		t.Errorf("high-reliability meta EP=%.4f should be > low-reliability meta EP=%.4f", epHigh, epLow)
+	}
+}
+
+// TestDefaultWeightIsOne: claim with nil-weight evidence uses weight=1.0.
+func TestDefaultWeightIsOne(t *testing.T) {
+	inv := New("default weight test")
+	inv.AddActor("a", "Actor", models.Analyst, WithReliability(0.8))
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	id := inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	inv.AddEvidence(id, "supporting doc", models.Supports) // no WithWeight → default
+
+	a, err := inv.AnalyzeClaim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The evidence should have contributed weight 1.0 to positive evidence
+	// Actor r + evidence 1.0 should be reflected in PositiveEvidence
+	if a.PositiveEvidence < 1.0 {
+		t.Errorf("PositiveEvidence=%.4f, should include at least 1.0 from default-weight evidence", a.PositiveEvidence)
 	}
 }

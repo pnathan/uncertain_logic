@@ -13,15 +13,17 @@ import (
 // meta-claim, either within the same investigation or after being loaded
 // from storage into a new one.
 type Finding struct {
-	ID              string
-	ClaimID         string
-	BelnapStatus    belnap.Value
-	Credibility     subjective.Opinion
-	SupportingCount int
-	RefutingCount   int
-	NeutralCount    int
-	AnalyzedAt      time.Time
-	Notes           string
+	ID               string
+	ClaimID          string
+	BelnapStatus     belnap.Value
+	Credibility      subjective.Opinion
+	SupportingCount  int
+	RefutingCount    int
+	NeutralCount     int
+	PositiveEvidence float64
+	NegativeEvidence float64
+	AnalyzedAt       time.Time
+	Notes            string
 }
 
 // Clone returns a deep copy of the Finding.
@@ -38,15 +40,17 @@ func (inv *Investigation) RegisterAnalysis(a *ClaimAnalysis) Finding {
 	defer inv.mu.Unlock()
 	id := inv.nextID("finding")
 	f := &Finding{
-		ID:              id,
-		ClaimID:         a.Claim.ID,
-		BelnapStatus:    a.BelnapStatus,
-		Credibility:     a.Credibility,
-		SupportingCount: a.SupportingCount,
-		RefutingCount:   a.RefutingCount,
-		NeutralCount:    a.NeutralCount,
-		AnalyzedAt:      time.Now(),
-		Notes:           fmt.Sprintf("Analysis of claim %s", a.Claim.ID),
+		ID:               id,
+		ClaimID:          a.Claim.ID,
+		BelnapStatus:     a.BelnapStatus,
+		Credibility:      a.Credibility,
+		SupportingCount:  a.SupportingCount,
+		RefutingCount:    a.RefutingCount,
+		NeutralCount:     a.NeutralCount,
+		PositiveEvidence: a.PositiveEvidence,
+		NegativeEvidence: a.NegativeEvidence,
+		AnalyzedAt:       time.Now(),
+		Notes:            fmt.Sprintf("Analysis of claim %s", a.Claim.ID),
 	}
 	inv.findings[id] = f
 	return f.Clone()
