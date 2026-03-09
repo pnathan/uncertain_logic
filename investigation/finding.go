@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"uncertain_logic/belnap"
-	"uncertain_logic/subjective"
+	"github.com/pnathan/uncertain_logic/belnap"
+	"github.com/pnathan/uncertain_logic/subjective"
 )
 
 // Finding is the persisted result of analyzing a claim.

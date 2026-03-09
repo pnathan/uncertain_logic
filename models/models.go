@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"uncertain_logic/temporal"
+	"github.com/pnathan/uncertain_logic/temporal"
 )
 
 // SourceType classifies the kind of actor making claims.

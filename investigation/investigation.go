@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"uncertain_logic/belnap"
-	"uncertain_logic/models"
-	"uncertain_logic/subjective"
-	"uncertain_logic/temporal"
+	"github.com/pnathan/uncertain_logic/belnap"
+	"github.com/pnathan/uncertain_logic/models"
+	"github.com/pnathan/uncertain_logic/subjective"
+	"github.com/pnathan/uncertain_logic/temporal"
 )
 
 // Investigation holds all actors, subjects, claims, evidence, and findings for a research question.
