@@ -42,6 +42,12 @@ const (
 
 // Relate returns the Allen relation between two intervals.
 // Returns Equals if either interval has nil bounds (conservative — treat as potentially overlapping).
+//
+// Reference: Allen, "Maintaining Knowledge about Temporal Intervals",
+// Communications of the ACM 26(11), 1983, pp. 832–843.
+// Allen's framework assumes non-degenerate intervals (Start < End).
+// Degenerate point intervals (Start == End) are handled correctly by
+// checking Equals before boundary-contact relations like Meets/MetBy.
 func Relate(a, b EventInterval) AllenRelation {
 	// Any open/unspecified bound → conservative: treat as Equals (overlapping)
 	if a.Start == nil || a.End == nil || b.Start == nil || b.End == nil {
@@ -50,7 +56,11 @@ func Relate(a, b EventInterval) AllenRelation {
 	aS, aE := *a.Start, *a.End
 	bS, bE := *b.Start, *b.End
 
+	// Check Equals first so that degenerate point intervals (Start == End)
+	// are not misclassified as Meets when all four times coincide.
 	switch {
+	case aS.Equal(bS) && aE.Equal(bE):
+		return Equals
 	case aE.Before(bS):
 		return Precedes
 	case aE.Equal(bS):
@@ -63,8 +73,6 @@ func Relate(a, b EventInterval) AllenRelation {
 		return Contains
 	case aS.Equal(bS) && aE.Before(bE):
 		return Starts
-	case aS.Equal(bS) && aE.Equal(bE):
-		return Equals
 	case aS.Equal(bS) && aE.After(bE):
 		return StartedBy
 	case aS.After(bS) && aE.Before(bE):

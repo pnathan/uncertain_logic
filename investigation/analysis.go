@@ -177,14 +177,18 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	allOpinions := append([]subjective.Opinion{actorOpinion}, evidenceOpinions...)
 	credibility := subjective.ConsensusFuse(allOpinions...)
 
-	// Step 6: Belnap status from evidence
+	// Step 6: Belnap status from evidence.
+	// Per Belnap (1977), the four values {T,F,N,B} track what the evidence
+	// base tells us. With no evidence, a reliable actor's assertion alone
+	// provides one piece of information whose polarity depends on Valence.
 	belnapStatus := belnap.FromCounts(supporting, refuting)
-	// If no evidence at all, actor assertion alone → True (we trust the actor to some degree)
 	if supporting == 0 && refuting == 0 {
 		if adjustedReliability > 0.5 {
-			belnapStatus = belnap.True
-		} else if adjustedReliability < 0.3 {
-			belnapStatus = belnap.Neither
+			if c.Valence == models.Refutes {
+				belnapStatus = belnap.False
+			} else {
+				belnapStatus = belnap.True
+			}
 		} else {
 			belnapStatus = belnap.Neither
 		}
