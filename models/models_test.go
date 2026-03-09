@@ -122,6 +122,115 @@ func TestToProposition(t *testing.T) {
 	}
 }
 
+func TestActorClone(t *testing.T) {
+	orig := Actor{
+		ID: "a1", Name: "Analyst", SourceType: Analyst, BaseReliability: 0.8,
+		Conflicts: []ConflictOfInterest{
+			{Description: "long position", Direction: Long, Disclosed: true, SubjectID: "s1"},
+		},
+		Notes: "original",
+	}
+	clone := orig.Clone()
+
+	// Mutate clone — original must be unaffected
+	clone.Name = "Mutated"
+	clone.BaseReliability = 0.1
+	clone.Conflicts[0].Description = "mutated"
+	clone.Conflicts = append(clone.Conflicts, ConflictOfInterest{Description: "new"})
+	clone.Notes = "cloned"
+
+	if orig.Name != "Analyst" {
+		t.Errorf("clone mutated original Name")
+	}
+	if orig.BaseReliability != 0.8 {
+		t.Errorf("clone mutated original BaseReliability")
+	}
+	if orig.Conflicts[0].Description != "long position" {
+		t.Errorf("clone mutated original Conflicts[0]")
+	}
+	if len(orig.Conflicts) != 1 {
+		t.Errorf("clone append affected original Conflicts len: got %d", len(orig.Conflicts))
+	}
+	if orig.Notes != "original" {
+		t.Errorf("clone mutated original Notes")
+	}
+
+	// Actor with nil Conflicts
+	bare := Actor{ID: "bare", BaseReliability: 0.5}
+	bareClone := bare.Clone()
+	if bareClone.ID != "bare" || bareClone.BaseReliability != 0.5 {
+		t.Errorf("bare clone mismatch: %+v", bareClone)
+	}
+}
+
+func TestSubjectClone(t *testing.T) {
+	orig := Subject{ID: "s1", Name: "Corp", SubjectType: "company", Notes: "original"}
+	clone := orig.Clone()
+	clone.Name = "Mutated"
+	if orig.Name != "Corp" {
+		t.Errorf("clone mutated original Name")
+	}
+}
+
+func TestEvidenceClone(t *testing.T) {
+	w := 0.9
+	orig := Evidence{
+		ID: "e1", ClaimID: "c1", Content: "doc", Valence: Supports,
+		Weight: &w, Notes: "original",
+	}
+	clone := orig.Clone()
+
+	// Mutate clone weight pointer — original must be unaffected
+	*clone.Weight = 0.1
+	clone.Notes = "cloned"
+
+	if *orig.Weight != 0.9 {
+		t.Errorf("clone mutated original Weight: got %f", *orig.Weight)
+	}
+	if orig.Notes != "original" {
+		t.Errorf("clone mutated original Notes")
+	}
+
+	// Evidence with nil Weight
+	noWeight := Evidence{ID: "e2", Valence: Neutral}
+	nwClone := noWeight.Clone()
+	if nwClone.Weight != nil {
+		t.Error("clone of nil-weight evidence should have nil Weight")
+	}
+}
+
+func TestClaimClone(t *testing.T) {
+	orig := Claim{
+		ID: "c1", ActorID: "a1", SubjectID: "s1",
+		Predicate: "revenue", Value: "100M", Content: "claim text",
+		EvidenceIDs: []string{"e1", "e2"},
+		Notes:       "original",
+	}
+	clone := orig.Clone()
+
+	// Mutate clone — original must be unaffected
+	clone.EvidenceIDs[0] = "mutated"
+	clone.EvidenceIDs = append(clone.EvidenceIDs, "e3")
+	clone.Notes = "cloned"
+
+	if orig.EvidenceIDs[0] != "e1" {
+		t.Errorf("clone mutated original EvidenceIDs[0]")
+	}
+	if len(orig.EvidenceIDs) != 2 {
+		t.Errorf("clone append affected original EvidenceIDs len: got %d", len(orig.EvidenceIDs))
+	}
+	if orig.Notes != "original" {
+		t.Errorf("clone mutated original Notes")
+	}
+
+	// Claim with nil EvidenceIDs
+	bare := Claim{ID: "c2", Predicate: "p"}
+	bareClone := bare.Clone()
+	if bareClone.ID != "c2" || bareClone.Predicate != "p" {
+		t.Errorf("bare clone mismatch: %+v", bareClone)
+	}
+}
+
 func TestEffectiveWeight(t *testing.T) {
 	// nil weight → default 0.6
 	e := &Evidence{}

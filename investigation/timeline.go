@@ -12,13 +12,16 @@ import (
 // Claims in different slices signal temporal evolution (fluent change).
 type TimeSlice struct {
 	Interval temporal.EventInterval
-	Claims   []*models.Claim
+	Claims   []models.Claim
 }
 
 // SubjectTimeline returns the ordered sequence of TimeSlices for a subject.
 // This reveals how the narrative about the subject has evolved over time.
 func (inv *Investigation) SubjectTimeline(subjectID string) []TimeSlice {
-	claims := inv.ClaimsAbout(subjectID)
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+
+	claims := inv.claimsAbout(subjectID)
 	if len(claims) == 0 {
 		return nil
 	}
@@ -60,9 +63,15 @@ func (inv *Investigation) SubjectTimeline(subjectID string) []TimeSlice {
 			}
 		}
 
+		// Clone claims for the return value
+		clonedCluster := make([]models.Claim, len(cluster))
+		for k, cl := range cluster {
+			clonedCluster[k] = cl.Clone()
+		}
+
 		slices = append(slices, TimeSlice{
 			Interval: representative,
-			Claims:   cluster,
+			Claims:   clonedCluster,
 		})
 	}
 
@@ -89,8 +98,8 @@ func unionInterval(a, b temporal.EventInterval) temporal.EventInterval {
 // BeliefRevision records a pair of claims by the same actor about the same subject
 // where the later claim may contradict the earlier one.
 type BeliefRevision struct {
-	Earlier *models.Claim
-	Later   *models.Claim
+	Earlier models.Claim
+	Later   models.Claim
 	// TemporallyConsistent is true if the intervals don't overlap
 	// (both could be true — the subject changed). False means genuine reversal.
 	TemporallyConsistent bool
@@ -98,16 +107,25 @@ type BeliefRevision struct {
 
 // ActorBeliefHistory returns the sequence of claims by an actor about a subject,
 // ordered by AssertionTime, and the belief revisions detected.
-func (inv *Investigation) ActorBeliefHistory(actorID, subjectID string) ([]*models.Claim, []BeliefRevision) {
-	var claims []*models.Claim
+func (inv *Investigation) ActorBeliefHistory(actorID, subjectID string) ([]models.Claim, []BeliefRevision) {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+
+	var internal []*models.Claim
 	for _, c := range inv.claims {
 		if c.ActorID == actorID && c.SubjectID == subjectID {
-			claims = append(claims, c)
+			internal = append(internal, c)
 		}
 	}
-	sort.Slice(claims, func(i, j int) bool {
-		return claims[i].AssertionTime.Before(claims[j].AssertionTime)
+	sort.Slice(internal, func(i, j int) bool {
+		return internal[i].AssertionTime.Before(internal[j].AssertionTime)
 	})
+
+	// Clone for return
+	claims := make([]models.Claim, len(internal))
+	for i, c := range internal {
+		claims[i] = c.Clone()
+	}
 
 	var revisions []BeliefRevision
 	for i := 1; i < len(claims); i++ {

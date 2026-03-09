@@ -2,6 +2,7 @@ package investigation
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pnathan/uncertain_logic/belnap"
@@ -11,9 +12,12 @@ import (
 )
 
 // Investigation holds all actors, subjects, claims, evidence, and findings for a research question.
+// An Investigation is safe for concurrent use by multiple goroutines. Accessor methods return
+// value copies; to mutate entities, use the Update*/Add* methods which acquire the write lock.
 type Investigation struct {
 	ResearchQuestion string
 	BaseRate         float64
+	mu               sync.RWMutex
 	actors           map[string]*models.Actor
 	subjects         map[string]*models.Subject
 	claims           map[string]*models.Claim
@@ -38,86 +42,111 @@ func New(question string) *Investigation {
 // --- Load (bulk import from storage) ---
 
 // LoadActors registers pre-existing actors by their stored IDs.
-func (inv *Investigation) LoadActors(actors []*models.Actor) {
+func (inv *Investigation) LoadActors(actors []models.Actor) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	for _, a := range actors {
-		inv.actors[a.ID] = a
+		a := a
+		inv.actors[a.ID] = &a
 	}
 }
 
 // LoadSubjects registers pre-existing subjects by their stored IDs.
-func (inv *Investigation) LoadSubjects(subjects []*models.Subject) {
+func (inv *Investigation) LoadSubjects(subjects []models.Subject) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	for _, s := range subjects {
-		inv.subjects[s.ID] = s
+		s := s
+		inv.subjects[s.ID] = &s
 	}
 }
 
 // LoadClaims registers pre-existing claims by their stored IDs.
-func (inv *Investigation) LoadClaims(claims []*models.Claim) {
+func (inv *Investigation) LoadClaims(claims []models.Claim) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	for _, c := range claims {
-		inv.claims[c.ID] = c
+		c := c
+		inv.claims[c.ID] = &c
 	}
 }
 
 // LoadEvidence registers pre-existing evidence by their stored IDs.
 // Evidence must be loaded after the claims it references so that
 // claim.EvidenceIDs remain authoritative.
-func (inv *Investigation) LoadEvidence(evidence []*models.Evidence) {
+func (inv *Investigation) LoadEvidence(evidence []models.Evidence) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	for _, e := range evidence {
-		inv.evidence[e.ID] = e
+		e := e
+		inv.evidence[e.ID] = &e
 	}
 }
 
 // LoadFindings registers pre-existing findings by their stored IDs,
 // making them addressable as TargetClaimID targets in new meta-claims.
-func (inv *Investigation) LoadFindings(findings []*Finding) {
+func (inv *Investigation) LoadFindings(findings []Finding) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	for _, f := range findings {
-		inv.findings[f.ID] = f
+		f := f
+		inv.findings[f.ID] = &f
 	}
 }
 
 // --- Read accessors (for persisting back to storage) ---
 
-// Actors returns all registered actors.
-func (inv *Investigation) Actors() []*models.Actor {
-	out := make([]*models.Actor, 0, len(inv.actors))
+// Actors returns all registered actors as value copies.
+func (inv *Investigation) Actors() []models.Actor {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make([]models.Actor, 0, len(inv.actors))
 	for _, a := range inv.actors {
-		out = append(out, a)
+		out = append(out, a.Clone())
 	}
 	return out
 }
 
-// Subjects returns all registered subjects.
-func (inv *Investigation) Subjects() []*models.Subject {
-	out := make([]*models.Subject, 0, len(inv.subjects))
+// Subjects returns all registered subjects as value copies.
+func (inv *Investigation) Subjects() []models.Subject {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make([]models.Subject, 0, len(inv.subjects))
 	for _, s := range inv.subjects {
-		out = append(out, s)
+		out = append(out, s.Clone())
 	}
 	return out
 }
 
-// Claims returns all registered claims.
-func (inv *Investigation) Claims() []*models.Claim {
-	out := make([]*models.Claim, 0, len(inv.claims))
+// Claims returns all registered claims as value copies.
+func (inv *Investigation) Claims() []models.Claim {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make([]models.Claim, 0, len(inv.claims))
 	for _, c := range inv.claims {
-		out = append(out, c)
+		out = append(out, c.Clone())
 	}
 	return out
 }
 
-// Evidence returns all registered evidence.
-func (inv *Investigation) Evidence() []*models.Evidence {
-	out := make([]*models.Evidence, 0, len(inv.evidence))
+// Evidence returns all registered evidence as value copies.
+func (inv *Investigation) Evidence() []models.Evidence {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make([]models.Evidence, 0, len(inv.evidence))
 	for _, e := range inv.evidence {
-		out = append(out, e)
+		out = append(out, e.Clone())
 	}
 	return out
 }
 
-// Findings returns all registered findings — the outputs ready to persist.
-func (inv *Investigation) Findings() []*Finding {
-	out := make([]*Finding, 0, len(inv.findings))
+// Findings returns all registered findings as value copies.
+func (inv *Investigation) Findings() []Finding {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make([]Finding, 0, len(inv.findings))
 	for _, f := range inv.findings {
-		out = append(out, f)
+		out = append(out, f.Clone())
 	}
 	return out
 }
@@ -144,7 +173,10 @@ func WithActorNotes(notes string) ActorOption {
 }
 
 // AddActor registers an actor. Default reliability: 0.6.
-func (inv *Investigation) AddActor(id, name string, sourceType models.SourceType, opts ...ActorOption) *models.Actor {
+// Returns a value copy of the created actor.
+func (inv *Investigation) AddActor(id, name string, sourceType models.SourceType, opts ...ActorOption) models.Actor {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	a := &models.Actor{
 		ID:              id,
 		Name:            name,
@@ -155,14 +187,17 @@ func (inv *Investigation) AddActor(id, name string, sourceType models.SourceType
 		o(a)
 	}
 	inv.actors[id] = a
-	return a
+	return a.Clone()
 }
 
 // AddSubject registers a subject entity.
-func (inv *Investigation) AddSubject(id, name, subjectType string) *models.Subject {
+// Returns a value copy of the created subject.
+func (inv *Investigation) AddSubject(id, name, subjectType string) models.Subject {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	s := &models.Subject{ID: id, Name: name, SubjectType: subjectType}
 	inv.subjects[id] = s
-	return s
+	return s.Clone()
 }
 
 // --- Claim options ---
@@ -193,6 +228,8 @@ func WithValence(v models.Valence) ClaimOption {
 
 // AssertFact adds a high-confidence ground truth claim (system actor, reliability≈1.0).
 func (inv *Investigation) AssertFact(p models.Proposition, interval temporal.EventInterval, opts ...ClaimOption) string {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	// Ensure system actor exists
 	if _, ok := inv.actors["_system"]; !ok {
 		inv.actors["_system"] = &models.Actor{
@@ -223,6 +260,8 @@ func (inv *Investigation) AssertFact(p models.Proposition, interval temporal.Eve
 
 // AssertClaim adds a claim made by an actor. Returns the claim ID.
 func (inv *Investigation) AssertClaim(actorID string, p models.Proposition, assertionTime time.Time, interval temporal.EventInterval, opts ...ClaimOption) string {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	id := inv.nextID("claim")
 	c := &models.Claim{
 		ID:            id,
@@ -247,6 +286,8 @@ func (inv *Investigation) AssertClaim(actorID string, p models.Proposition, asse
 // value is the asserted value (e.g. "false", "stated").
 // The Valence option should be set to indicate whether this supports or refutes the target.
 func (inv *Investigation) AssertMetaClaim(actorID, targetClaimID string, predicate, value string, assertionTime time.Time, opts ...ClaimOption) string {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	id := inv.nextID("claim")
 	c := &models.Claim{
 		ID:            id,
@@ -288,6 +329,8 @@ func WithEvidenceNotes(notes string) EvidenceOption {
 
 // AddEvidence attaches evidence to a claim. Returns evidence ID.
 func (inv *Investigation) AddEvidence(claimID, content string, valence models.Valence, opts ...EvidenceOption) string {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	id := inv.nextID("evidence")
 	e := &models.Evidence{
 		ID:      id,
@@ -314,12 +357,15 @@ type QueryResult struct {
 	Interval      temporal.EventInterval
 	Belnap        belnap.Value
 	Opinion       subjective.Opinion
-	MatchedClaims []*models.Claim
+	MatchedClaims []models.Claim
 }
 
 // Q evaluates all claims matching subject+predicate at the given interval.
 // Returns one QueryResult per overlapping cluster of claims.
 func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterval) []QueryResult {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+
 	var matched []*models.Claim
 	for _, c := range inv.claims {
 		if c.SubjectID == subjectID && c.Predicate == predicate {
@@ -365,12 +411,18 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 		fusedOpinion = subjective.Vacuous(inv.BaseRate)
 	}
 
+	// Clone matched claims for the return value
+	clonedMatched := make([]models.Claim, len(matched))
+	for i, c := range matched {
+		clonedMatched[i] = c.Clone()
+	}
+
 	return []QueryResult{{
 		Proposition:   models.Proposition{Subject: subjectID, Predicate: predicate},
 		Interval:      at,
 		Belnap:        status,
 		Opinion:       fusedOpinion,
-		MatchedClaims: matched,
+		MatchedClaims: clonedMatched,
 	}}
 }
 
@@ -424,8 +476,8 @@ func Not(a QueryResult) QueryResult {
 
 // --- Low-level access ---
 
-// ClaimsAbout returns all claims about a subject.
-func (inv *Investigation) ClaimsAbout(subjectID string) []*models.Claim {
+// claimsAbout returns internal claim pointers for a subject. Caller must hold at least RLock.
+func (inv *Investigation) claimsAbout(subjectID string) []*models.Claim {
 	var result []*models.Claim
 	for _, c := range inv.claims {
 		if c.SubjectID == subjectID {
@@ -435,8 +487,21 @@ func (inv *Investigation) ClaimsAbout(subjectID string) []*models.Claim {
 	return result
 }
 
-// MetaClaimsAbout returns all meta-claims targeting a claim or finding ID.
-func (inv *Investigation) MetaClaimsAbout(claimID string) []*models.Claim {
+// ClaimsAbout returns all claims about a subject as value copies.
+func (inv *Investigation) ClaimsAbout(subjectID string) []models.Claim {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	internal := inv.claimsAbout(subjectID)
+	result := make([]models.Claim, len(internal))
+	for i, c := range internal {
+		result[i] = c.Clone()
+	}
+	return result
+}
+
+// metaClaimsAbout returns internal claim pointers targeting a claim or finding ID.
+// Caller must hold at least RLock.
+func (inv *Investigation) metaClaimsAbout(claimID string) []*models.Claim {
 	var result []*models.Claim
 	for _, c := range inv.claims {
 		if c.TargetClaimID == claimID {
@@ -446,13 +511,29 @@ func (inv *Investigation) MetaClaimsAbout(claimID string) []*models.Claim {
 	return result
 }
 
+// MetaClaimsAbout returns all meta-claims targeting a claim or finding ID as value copies.
+func (inv *Investigation) MetaClaimsAbout(claimID string) []models.Claim {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	internal := inv.metaClaimsAbout(claimID)
+	result := make([]models.Claim, len(internal))
+	for i, c := range internal {
+		result[i] = c.Clone()
+	}
+	return result
+}
+
 // AnalyzeClaim performs depth-limited recursive credibility analysis.
 func (inv *Investigation) AnalyzeClaim(claimID string) (*ClaimAnalysis, error) {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	return inv.analyzeClaim(claimID, 0)
 }
 
 // AnalyzeAll analyzes all claims.
 func (inv *Investigation) AnalyzeAll() []*ClaimAnalysis {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	var results []*ClaimAnalysis
 	for id := range inv.claims {
 		a, err := inv.analyzeClaim(id, 0)
@@ -465,7 +546,107 @@ func (inv *Investigation) AnalyzeAll() []*ClaimAnalysis {
 
 // Summary returns a brief summary of the investigation.
 func (inv *Investigation) Summary() string {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	return fmt.Sprintf("Investigation: %s\n  Actors: %d, Subjects: %d, Claims: %d, Evidence: %d, Findings: %d",
 		inv.ResearchQuestion,
 		len(inv.actors), len(inv.subjects), len(inv.claims), len(inv.evidence), len(inv.findings))
+}
+
+// --- Mutation methods ---
+
+// UpdateActorReliability sets the base reliability for an actor.
+func (inv *Investigation) UpdateActorReliability(id string, r float64) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	a, ok := inv.actors[id]
+	if !ok {
+		return fmt.Errorf("actor %q not found", id)
+	}
+	a.BaseReliability = r
+	return nil
+}
+
+// AddActorConflict appends a conflict of interest to an actor.
+func (inv *Investigation) AddActorConflict(id string, c models.ConflictOfInterest) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	a, ok := inv.actors[id]
+	if !ok {
+		return fmt.Errorf("actor %q not found", id)
+	}
+	a.Conflicts = append(a.Conflicts, c)
+	return nil
+}
+
+// UpdateActorNotes sets the notes for an actor.
+func (inv *Investigation) UpdateActorNotes(id string, notes string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	a, ok := inv.actors[id]
+	if !ok {
+		return fmt.Errorf("actor %q not found", id)
+	}
+	a.Notes = notes
+	return nil
+}
+
+// UpdateSubjectNotes sets the notes for a subject.
+func (inv *Investigation) UpdateSubjectNotes(id string, notes string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	s, ok := inv.subjects[id]
+	if !ok {
+		return fmt.Errorf("subject %q not found", id)
+	}
+	s.Notes = notes
+	return nil
+}
+
+// UpdateClaimNotes sets the notes for a claim.
+func (inv *Investigation) UpdateClaimNotes(id string, notes string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	c, ok := inv.claims[id]
+	if !ok {
+		return fmt.Errorf("claim %q not found", id)
+	}
+	c.Notes = notes
+	return nil
+}
+
+// UpdateEvidenceWeight sets the weight for a piece of evidence.
+func (inv *Investigation) UpdateEvidenceWeight(id string, w float64) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	e, ok := inv.evidence[id]
+	if !ok {
+		return fmt.Errorf("evidence %q not found", id)
+	}
+	e.Weight = &w
+	return nil
+}
+
+// UpdateEvidenceNotes sets the notes for a piece of evidence.
+func (inv *Investigation) UpdateEvidenceNotes(id string, notes string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	e, ok := inv.evidence[id]
+	if !ok {
+		return fmt.Errorf("evidence %q not found", id)
+	}
+	e.Notes = notes
+	return nil
+}
+
+// UpdateFindingNotes sets the notes for a finding.
+func (inv *Investigation) UpdateFindingNotes(id string, notes string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	f, ok := inv.findings[id]
+	if !ok {
+		return fmt.Errorf("finding %q not found", id)
+	}
+	f.Notes = notes
+	return nil
 }

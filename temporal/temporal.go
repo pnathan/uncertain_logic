@@ -88,6 +88,20 @@ func Relate(a, b EventInterval) AllenRelation {
 	}
 }
 
+// Clone returns a deep copy of the EventInterval.
+func (ei EventInterval) Clone() EventInterval {
+	clone := ei
+	if ei.Start != nil {
+		t := *ei.Start
+		clone.Start = &t
+	}
+	if ei.End != nil {
+		t := *ei.End
+		clone.End = &t
+	}
+	return clone
+}
+
 // Overlapping returns true if the two intervals could refer to the same time period.
 // Non-overlapping intervals (Precedes, PrecededBy) indicate temporal evolution, not contradiction.
 func Overlapping(a, b EventInterval) bool {
