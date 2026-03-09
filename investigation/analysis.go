@@ -113,8 +113,16 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	}
 	trust := subjective.FromReliability(adjustedReliability, inv.BaseRate)
 
-	// Step 2: Actor asserts claim with certainty; discount by our trust
-	actorOpinion := subjective.TrustDiscount(trust, subjective.DogmaticTrue(inv.BaseRate))
+	// Step 2: Actor asserts claim with certainty; discount by our trust.
+	// If the claim's own Valence is Refutes, the actor is asserting the
+	// proposition is false, so we start from DogmaticFalse.
+	var actorAssertion subjective.Opinion
+	if c.Valence == models.Refutes {
+		actorAssertion = subjective.DogmaticFalse(inv.BaseRate)
+	} else {
+		actorAssertion = subjective.DogmaticTrue(inv.BaseRate)
+	}
+	actorOpinion := subjective.TrustDiscount(trust, actorAssertion)
 
 	// Step 3: Accumulate evidence opinions
 	var evidenceOpinions []subjective.Opinion
