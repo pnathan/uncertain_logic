@@ -34,50 +34,69 @@ uncertain_logic/
 ## Quick start
 
 ```go
+package main
+
 import (
-    "uncertain_logic/investigation"
-    "uncertain_logic/models"
-    "uncertain_logic/temporal"
+    "fmt"
+    "time"
+
+    "github.com/pnathan/uncertain_logic/investigation"
+    "github.com/pnathan/uncertain_logic/models"
+    "github.com/pnathan/uncertain_logic/temporal"
 )
 
-inv := investigation.New("Is the $5B cost estimate credible?")
+func main() {
+    inv := investigation.New("Is the $5B cost estimate credible?")
 
-inv.AddActor("senator", "Senator X", models.Expert,
-    investigation.WithReliability(0.7))
-inv.AddActor("cbo", "CBO", models.Institutional,
-    investigation.WithReliability(0.95))
-inv.AddActor("lobbyist", "Industry Lobbyist", models.Analyst,
-    investigation.WithReliability(0.6),
-    investigation.WithConflict(models.ConflictOfInterest{
-        Description: "Client benefits from bill passage",
-        Direction:   models.Long,
-        Disclosed:   true,
-    }),
-)
-inv.AddSubject("bill42", "Bill S.42", "legislation")
+    inv.AddActor("senator", "Senator X", models.Expert,
+        investigation.WithReliability(0.7))
+    inv.AddActor("cbo", "CBO", models.Institutional,
+        investigation.WithReliability(0.95))
+    inv.AddActor("lobbyist", "Industry Lobbyist", models.Analyst,
+        investigation.WithReliability(0.6),
+        investigation.WithConflict(models.ConflictOfInterest{
+            Description: "Client benefits from bill passage",
+            Direction:   models.Long,
+            Disclosed:   true,
+        }),
+    )
+    inv.AddSubject("bill42", "Bill S.42", "legislation")
 
-iv := temporal.EventInterval{...} // the period the claim is about
+    // The time period the claim covers
+    start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+    end := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+    iv := temporal.EventInterval{Start: &start, End: &end}
 
-claimID := inv.AssertClaim("senator",
-    investigation.Prop("bill42", "cost", "5B"),
-    assertionTime, iv)
+    // When the claim was made
+    assertionTime := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 
-// Attach evidence
-inv.AddEvidence(claimID, "CBO score shows $4.8B", models.Supports,
-    investigation.WithWeight(0.85))
-inv.AddEvidence(claimID, "Treasury model shows $7.2B", models.Refutes,
-    investigation.WithWeight(0.75))
+    claimID := inv.AssertClaim("senator",
+        models.Proposition{Subject: "bill42", Predicate: "cost", Value: "5B"},
+        assertionTime, iv)
 
-// Analyze
-a, _ := inv.AnalyzeClaim(claimID)
-fmt.Println(a.FiveQuestions())
-// Q1 (What):  bill42 cost = 5B
-// Q2 (When claimed): Senator X claimed at 2024-02-01
-// Q3 (About):  bill42
-// Q4 (Event interval): 2024-01-01 to 2024-12-31
-// Q5 (Credibility): Belnap=B, E[p]=0.512 (b=0.340 d=0.380 u=0.280)
-//    Evidence: 1 supporting, 1 refuting, 0 neutral
-//    Actor reliability: 0.700 (base=0.700, after conflicts)
+    // Attach evidence
+    inv.AddEvidence(claimID, "CBO score shows $4.8B", models.Supports,
+        investigation.WithWeight(0.85))
+    inv.AddEvidence(claimID, "Treasury model shows $7.2B", models.Refutes,
+        investigation.WithWeight(0.75))
+
+    // Analyze
+    a, _ := inv.AnalyzeClaim(claimID)
+    fmt.Println(a.FiveQuestions())
+}
+```
+
+Output:
+
+```
+=== Five Questions ===
+Q1 (What):  bill42 cost = 5B
+Q2 (When claimed): Senator X claimed at 2024-02-01
+Q3 (About):  Bill S.42 (bill42)
+Q4 (Event interval): 2024-01-01 to 2024-12-31
+Q5 (Credibility): Belnap=B, E[p]=0.645 (b=0.443 d=0.152 u=0.405)
+   Evidence: 1 supporting, 1 refuting, 0 neutral (r=2.18, s=0.75)
+   Actor reliability: 0.700 (base=0.700, after conflicts)
 ```
 
 ---
@@ -86,10 +105,10 @@ fmt.Println(a.FiveQuestions())
 
 ### Claims and subjects
 
-Every claim is a **triple**: `(subject, predicate, value)` — wrapped in a `Proposition`.
+Every claim is a **triple**: `(subject, predicate, value)` — wrapped in a `models.Proposition`.
 
 ```go
-prop := investigation.Prop("company_x", "revenue", "50M")
+prop := models.Proposition{Subject: "company_x", Predicate: "revenue", Value: "50M"}
 ```
 
 Attach it to an actor assertion with `AssertClaim`, or record it as ground truth with `AssertFact`.
@@ -100,7 +119,8 @@ A claim can target another claim rather than a subject entity. This is how you m
 
 ```go
 // Senator's direct claim
-senClaimID := inv.AssertClaim("senator", investigation.Prop("bill42", "cost", "5B"), t1, iv)
+senClaimID := inv.AssertClaim("senator",
+    models.Proposition{Subject: "bill42", Predicate: "cost", Value: "5B"}, t1, iv)
 
 // Journalist attributes it (supports the claim as real, not the cost figure)
 inv.AssertMetaClaim("journalist", senClaimID, "authorship", "stated", t2,
@@ -203,10 +223,12 @@ for _, r := range results {
     fmt.Println(r.Belnap, r.Opinion.ExpectedProbability())
 }
 
-// Combine results with logical operations
+// Combine results with logical operations (package-level functions)
 r1 := inv.Q("bill42", "cost", iv)[0]
 r2 := inv.Q("bill42", "feasibility", iv)[0]
 both := investigation.And(r1, r2)
+either := investigation.Or(r1, r2)
+negated := investigation.Not(r1)
 ```
 
 ### Timeline analysis
