@@ -759,6 +759,75 @@ func TestRefutingValenceNoEvidenceStillBearish(t *testing.T) {
 	}
 }
 
+// TestRefutingValenceNoEvidenceBelnapFalse: a Refutes-valence claim from a reliable
+// actor with no evidence should have BelnapStatus=False, not True.
+func TestRefutingValenceNoEvidenceBelnapFalse(t *testing.T) {
+	inv := New("belnap valence test")
+	inv.AddActor("sec", "SEC", models.Regulator, WithReliability(0.95))
+	inv.AddSubject("co", "Company", "company")
+
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	id := inv.AssertClaim("sec", prop("co", "outlook", "positive"), now, iv,
+		WithValence(models.Refutes))
+
+	a, err := inv.AnalyzeClaim(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.BelnapStatus != belnap.False {
+		t.Errorf("refuting claim from reliable actor: BelnapStatus=%v, want F", a.BelnapStatus)
+	}
+}
+
+// TestAndOpMultipliesExpectedProbability: And on QueryResults should produce
+// E[A∧B] = E[A]·E[B] (Jøsang multiplication), not fused evidence.
+func TestAndOpMultipliesExpectedProbability(t *testing.T) {
+	inv := New("and op test")
+	inv.AddSubject("s", "S", "general")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	inv.AssertFact(prop("s", "x", "true"), iv)
+	inv.AssertFact(prop("s", "y", "true"), iv)
+
+	rx := inv.Q("s", "x", iv)[0]
+	ry := inv.Q("s", "y", iv)[0]
+
+	andResult := And(rx, ry)
+	epX := rx.Opinion.ExpectedProbability()
+	epY := ry.Opinion.ExpectedProbability()
+	wantEP := epX * epY
+	gotEP := andResult.Opinion.ExpectedProbability()
+	// Allow tolerance for floating point
+	if diff := gotEP - wantEP; diff > 0.001 || diff < -0.001 {
+		t.Errorf("And E[p] = %.4f, want E[x]·E[y] = %.4f·%.4f = %.4f",
+			gotEP, epX, epY, wantEP)
+	}
+}
+
+// TestOrOpCoMultipliesExpectedProbability: Or on QueryResults should produce
+// E[A∨B] = E[A]+E[B]−E[A]·E[B] (Jøsang co-multiplication).
+func TestOrOpCoMultipliesExpectedProbability(t *testing.T) {
+	inv := New("or op test")
+	inv.AddSubject("s", "S", "general")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	inv.AssertFact(prop("s", "x", "true"), iv)
+	inv.AssertFact(prop("s", "y", "true"), iv)
+
+	rx := inv.Q("s", "x", iv)[0]
+	ry := inv.Q("s", "y", iv)[0]
+
+	orResult := Or(rx, ry)
+	epX := rx.Opinion.ExpectedProbability()
+	epY := ry.Opinion.ExpectedProbability()
+	wantEP := epX + epY - epX*epY
+	gotEP := orResult.Opinion.ExpectedProbability()
+	if diff := gotEP - wantEP; diff > 0.001 || diff < -0.001 {
+		t.Errorf("Or E[p] = %.4f, want E[x]+E[y]-E[x]·E[y] = %.4f",
+			gotEP, wantEP)
+	}
+}
+
 // TestDanglingEvidenceID: a claim referencing a non-loaded evidence ID gracefully skips it.
 func TestDanglingEvidenceID(t *testing.T) {
 	inv := New("dangling evidence test")

@@ -374,26 +374,39 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 	}}
 }
 
-// Logical operations on QueryResults
+// Logical operations on QueryResults.
+//
+// And/Or combine DIFFERENT propositions (e.g. "is X profitable?" AND
+// "is X growing?"). They use Jøsang's multiplication / co-multiplication
+// operators so that E[A∧B] = E[A]·E[B] (independence assumption).
+//
+// To combine independent assessments of the SAME proposition from different
+// sources, use ConsensusFuse directly.
+//
+// Reference: Jøsang, "Subjective Logic" (Springer 2016), §14.3.
 
-// And computes logical AND of two QueryResults (Belnap AND, fuse opinions).
+// And computes logical AND of two QueryResults.
+// Belnap: truth-lattice meet (per Belnap 1977).
+// Opinion: binomial multiplication (per Jøsang 2016 §14.3).
 func And(a, b QueryResult) QueryResult {
 	return QueryResult{
 		Proposition:   a.Proposition,
 		Interval:      a.Interval,
 		Belnap:        belnap.And(a.Belnap, b.Belnap),
-		Opinion:       subjective.ConsensusFuse(a.Opinion, b.Opinion),
+		Opinion:       subjective.Multiply(a.Opinion, b.Opinion),
 		MatchedClaims: append(a.MatchedClaims, b.MatchedClaims...),
 	}
 }
 
 // Or computes logical OR of two QueryResults.
+// Belnap: truth-lattice join (per Belnap 1977).
+// Opinion: binomial co-multiplication (per Jøsang 2016 §14.3).
 func Or(a, b QueryResult) QueryResult {
 	return QueryResult{
 		Proposition:   a.Proposition,
 		Interval:      a.Interval,
 		Belnap:        belnap.Or(a.Belnap, b.Belnap),
-		Opinion:       subjective.ConsensusFuse(a.Opinion, b.Opinion),
+		Opinion:       subjective.CoMultiply(a.Opinion, b.Opinion),
 		MatchedClaims: append(a.MatchedClaims, b.MatchedClaims...),
 	}
 }

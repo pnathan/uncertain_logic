@@ -53,9 +53,18 @@ func (o Opinion) ExpectedProbability() float64 {
 	return o.Belief + o.BaseRate*o.Uncertainty
 }
 
-// TrustDiscount applies trust discounting: we trust the source's opinion
+// TrustDiscount applies Type I trust discounting: we trust the source's opinion
 // proportionally to our trust in them. Full trust → their opinion intact;
 // zero trust → vacuous.
+//
+// Reference: Jøsang, "Subjective Logic" (Springer 2016), §14.2 Definition 14.2.
+//
+// Note: Type I discounting uses only trust.Belief. Sources with reliability
+// ≤ 0.5 (where trust.Belief == 0 via FromReliability) produce vacuous results
+// regardless of trust.Disbelief. This is a known limitation of Type I
+// discounting — it models trust (positive confidence) but not distrust
+// (active belief the source is lying). See Jøsang §14.2.2 for Type II
+// discounting which addresses this.
 func TrustDiscount(trust, claim Opinion) Opinion {
 	// result.b = trust.b · claim.b
 	// result.d = trust.b · claim.d
@@ -64,6 +73,68 @@ func TrustDiscount(trust, claim Opinion) Opinion {
 	d := trust.Belief * claim.Disbelief
 	u := 1 - trust.Belief*(claim.Belief+claim.Disbelief)
 	return Opinion{b, d, u, claim.BaseRate}
+}
+
+// Multiply computes the conjunction of two independent opinions: P(x AND y).
+// The resulting opinion satisfies E[x∧y] = E[x]·E[y] with base rate
+// a_{x∧y} = a_x·a_y, and maximises uncertainty subject to those constraints
+// (maximum entropy / least commitment principle).
+//
+// Reference: Jøsang, "Subjective Logic" (Springer 2016), §14.3 Definition 14.1.
+//
+// This operator is for combining DIFFERENT propositions. To combine
+// independent assessments of the SAME proposition, use ConsensusFuse.
+func Multiply(x, y Opinion) Opinion {
+	return opFromExpected(
+		x.ExpectedProbability()*y.ExpectedProbability(),
+		x.BaseRate*y.BaseRate,
+	)
+}
+
+// CoMultiply computes the disjunction of two independent opinions: P(x OR y).
+// The resulting opinion satisfies E[x∨y] = E[x]+E[y]−E[x]·E[y] with base
+// rate a_{x∨y} = a_x+a_y−a_x·a_y, and maximises uncertainty.
+//
+// Reference: Jøsang, "Subjective Logic" (Springer 2016), §14.3 Definition 14.2.
+func CoMultiply(x, y Opinion) Opinion {
+	ex := x.ExpectedProbability()
+	ey := y.ExpectedProbability()
+	return opFromExpected(
+		ex+ey-ex*ey,
+		x.BaseRate+y.BaseRate-x.BaseRate*y.BaseRate,
+	)
+}
+
+// opFromExpected constructs the maximum-uncertainty opinion consistent with a
+// target expected probability and base rate.
+func opFromExpected(ep, baseRate float64) Opinion {
+	ep = clamp(ep, 0, 1)
+	baseRate = clamp(baseRate, 0, 1)
+
+	// Edge cases where base rate is at a boundary.
+	if baseRate <= 0 {
+		// E[p] = b, u unconstrained by base rate; maximise u → b = ep, u = 1-ep.
+		return Opinion{ep, 1 - ep, 0, 0}
+	}
+	if baseRate >= 1 {
+		return Opinion{0, 1 - ep, 0, 1}
+	}
+
+	// Maximise u subject to:
+	//   b = ep − baseRate·u  ≥ 0  →  u ≤ ep/baseRate
+	//   d = 1 − b − u        ≥ 0  →  u ≤ (1−ep)/(1−baseRate)
+	uMax := ep / baseRate
+	if alt := (1 - ep) / (1 - baseRate); alt < uMax {
+		uMax = alt
+	}
+	if uMax > 1 {
+		uMax = 1
+	}
+
+	b := ep - baseRate*uMax
+	d := 1 - b - uMax
+	// Clamp to absorb floating-point noise.
+	return Opinion{clamp(b, 0, 1), clamp(d, 0, 1), clamp(uMax, 0, 1), baseRate}
 }
 
 // ConsensusFuse combines independent opinions using Cumulative Belief Fusion.
@@ -82,8 +153,16 @@ func ConsensusFuse(opinions ...Opinion) Opinion {
 	return result
 }
 
+// fuseTwo implements pairwise Cumulative Belief Fusion (CBF).
+//
+// Reference: Jøsang, Diaz & Rifqi, "Cumulative and Averaging Fusion of
+// Beliefs", Information Fusion 11(2), 2010, Theorem 1 (Eq. 14–15).
+// Base rate: confidence-weighted per Jøsang (2016) §12.6; when all opinions
+// share the same base rate (the common case in this codebase) the formula
+// degenerates to the shared value.
 func fuseTwo(a, b Opinion) Opinion {
-	// Both dogmatic: average
+	// Both dogmatic (u=0): weighted average with γ_A=γ_B=0.5 (default).
+	// Per Jøsang (2010) Eq. 15.
 	if a.Uncertainty == 0 && b.Uncertainty == 0 {
 		return Opinion{
 			Belief:      (a.Belief + b.Belief) / 2,
@@ -92,14 +171,14 @@ func fuseTwo(a, b Opinion) Opinion {
 			BaseRate:    (a.BaseRate + b.BaseRate) / 2,
 		}
 	}
-	// One dogmatic: dogmatic wins
+	// One dogmatic: dogmatic opinion represents infinite evidence, dominates.
 	if a.Uncertainty == 0 {
 		return a
 	}
 	if b.Uncertainty == 0 {
 		return b
 	}
-	// Normal case: CBF
+	// Normal case: CBF (Eq. 14).
 	denom := a.Uncertainty + b.Uncertainty - a.Uncertainty*b.Uncertainty
 	if math.Abs(denom) < 1e-12 {
 		return Vacuous((a.BaseRate + b.BaseRate) / 2)
@@ -107,7 +186,17 @@ func fuseTwo(a, b Opinion) Opinion {
 	belief := (a.Belief*b.Uncertainty + b.Belief*a.Uncertainty) / denom
 	disbelief := (a.Disbelief*b.Uncertainty + b.Disbelief*a.Uncertainty) / denom
 	uncertainty := (a.Uncertainty * b.Uncertainty) / denom
-	baseRate := (a.BaseRate + b.BaseRate) / 2
+	// Confidence-weighted base rate: each source's base rate is weighted by
+	// its confidence (1−u). Per Jøsang (2016) §12.6.
+	confA := 1 - a.Uncertainty
+	confB := 1 - b.Uncertainty
+	confSum := confA + confB
+	var baseRate float64
+	if confSum < 1e-12 {
+		baseRate = (a.BaseRate + b.BaseRate) / 2
+	} else {
+		baseRate = (a.BaseRate*confA + b.BaseRate*confB) / confSum
+	}
 	return Opinion{belief, disbelief, uncertainty, baseRate}
 }
 

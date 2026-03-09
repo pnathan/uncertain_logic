@@ -149,6 +149,90 @@ func TestFromReliabilityOutOfRange(t *testing.T) {
 	}
 }
 
+func TestMultiply(t *testing.T) {
+	// E[x∧y] = E[x]·E[y] for independent opinions.
+	cases := []struct {
+		name string
+		x, y Opinion
+	}{
+		{"vacuous∧vacuous", Vacuous(0.5), Vacuous(0.5)},
+		{"dogT∧dogT", DogmaticTrue(0.5), DogmaticTrue(0.5)},
+		{"dogT∧vacuous", DogmaticTrue(0.5), Vacuous(0.5)},
+		{"dogT∧dogF", DogmaticTrue(0.5), DogmaticFalse(0.5)},
+		{"strong∧strong", Opinion{0.8, 0.1, 0.1, 0.5}, Opinion{0.7, 0.1, 0.2, 0.5}},
+		{"partial∧partial", Opinion{0.3, 0.3, 0.4, 0.5}, Opinion{0.4, 0.2, 0.4, 0.5}},
+	}
+	for _, c := range cases {
+		result := Multiply(c.x, c.y)
+		wantEP := c.x.ExpectedProbability() * c.y.ExpectedProbability()
+		gotEP := result.ExpectedProbability()
+		if !approx(gotEP, wantEP) {
+			t.Errorf("%s: E[p] = %.6f, want %.6f (result=%+v)", c.name, gotEP, wantEP, result)
+		}
+		sum := result.Belief + result.Disbelief + result.Uncertainty
+		if !approx(sum, 1.0) {
+			t.Errorf("%s: b+d+u = %.6f, want 1", c.name, sum)
+		}
+		wantA := c.x.BaseRate * c.y.BaseRate
+		if !approx(result.BaseRate, wantA) {
+			t.Errorf("%s: base rate = %.6f, want %.6f", c.name, result.BaseRate, wantA)
+		}
+		if result.Belief < -eps || result.Disbelief < -eps || result.Uncertainty < -eps {
+			t.Errorf("%s: negative component: %+v", c.name, result)
+		}
+	}
+}
+
+func TestCoMultiply(t *testing.T) {
+	// E[x∨y] = E[x]+E[y]−E[x]·E[y] for independent opinions.
+	cases := []struct {
+		name string
+		x, y Opinion
+	}{
+		{"vacuous∨vacuous", Vacuous(0.5), Vacuous(0.5)},
+		{"dogT∨dogF", DogmaticTrue(0.5), DogmaticFalse(0.5)},
+		{"strong∨strong", Opinion{0.8, 0.1, 0.1, 0.5}, Opinion{0.7, 0.1, 0.2, 0.5}},
+	}
+	for _, c := range cases {
+		result := CoMultiply(c.x, c.y)
+		ex := c.x.ExpectedProbability()
+		ey := c.y.ExpectedProbability()
+		wantEP := ex + ey - ex*ey
+		gotEP := result.ExpectedProbability()
+		if !approx(gotEP, wantEP) {
+			t.Errorf("%s: E[p] = %.6f, want %.6f (result=%+v)", c.name, gotEP, wantEP, result)
+		}
+		sum := result.Belief + result.Disbelief + result.Uncertainty
+		if !approx(sum, 1.0) {
+			t.Errorf("%s: b+d+u = %.6f, want 1", c.name, sum)
+		}
+		if result.Belief < -eps || result.Disbelief < -eps || result.Uncertainty < -eps {
+			t.Errorf("%s: negative component: %+v", c.name, result)
+		}
+	}
+}
+
+func TestCBFBaseRateConfidenceWeighted(t *testing.T) {
+	// When base rates differ, the fused base rate should weight by confidence (1−u),
+	// not simple average. Per Jøsang (2016) §12.6.
+	a := Opinion{0.6, 0.1, 0.3, 0.8} // high confidence (u=0.3), high base rate
+	b := Opinion{0.1, 0.1, 0.8, 0.2} // low confidence (u=0.8), low base rate
+	fused := ConsensusFuse(a, b)
+
+	// Confidence-weighted: (0.8*0.7 + 0.2*0.2) / (0.7+0.2) = (0.56+0.04)/0.9 = 0.667
+	confA := 1 - a.Uncertainty
+	confB := 1 - b.Uncertainty
+	wantBR := (a.BaseRate*confA + b.BaseRate*confB) / (confA + confB)
+	if !approx(fused.BaseRate, wantBR) {
+		t.Errorf("fused base rate = %.3f, want %.3f (confidence-weighted)", fused.BaseRate, wantBR)
+	}
+	// Should NOT be the simple average
+	simpleAvg := (a.BaseRate + b.BaseRate) / 2
+	if approx(fused.BaseRate, simpleAvg) && !approx(wantBR, simpleAvg) {
+		t.Errorf("fused base rate %.3f is the simple average, should be confidence-weighted", fused.BaseRate)
+	}
+}
+
 func TestNegate(t *testing.T) {
 	o := Opinion{0.6, 0.2, 0.2, 0.3}
 	n := Negate(o)

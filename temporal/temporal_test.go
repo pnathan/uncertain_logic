@@ -92,6 +92,30 @@ func TestPointInTime(t *testing.T) {
 	}
 }
 
+// TestPointIntervalEquality: two identical point intervals must classify as Equals,
+// not Meets. Allen's framework assumes non-degenerate intervals (Start < End);
+// Relate now checks Equals before boundary-contact to handle the degenerate case.
+func TestPointIntervalEquality(t *testing.T) {
+	pt := time.Date(2020, 6, 15, 0, 0, 0, 0, time.UTC)
+	a := PointInTime(pt)
+	b := PointInTime(pt)
+	if got := Relate(a, b); got != Equals {
+		t.Errorf("Relate(point, same point) = %v, want Equals", got)
+	}
+}
+
+// TestPointIntervalVsDisjoint: a point interval before a proper interval → Precedes.
+func TestPointIntervalVsDisjoint(t *testing.T) {
+	pt := PointInTime(time.Date(2019, 6, 15, 0, 0, 0, 0, time.UTC))
+	iv := interval(2020, 1, 1, 2020, 12, 31)
+	if got := Relate(pt, iv); got != Precedes {
+		t.Errorf("Relate(point-before, interval) = %v, want Precedes", got)
+	}
+	if Overlapping(pt, iv) {
+		t.Error("point before interval should not overlap")
+	}
+}
+
 func TestGWBScenario(t *testing.T) {
 	// GWB scenario: two editorials about different presidential terms
 	term1 := interval(1985, 1, 1, 1993, 1, 1) // pre-presidency / first term window
