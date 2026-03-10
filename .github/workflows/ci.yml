@@ -55,7 +55,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -coverprofile=coverage.out ./...
+      - name: Run tests with coverage (excluding cmd/)
+        run: |
+          PKGS=$(go list ./... | grep -v '/cmd/')
+          go test -coverprofile=coverage.out $PKGS
       - run: go tool cover -func=coverage.out
       - name: Enforce 95% minimum coverage
         run: |

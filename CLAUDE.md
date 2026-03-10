@@ -16,7 +16,7 @@ No external dependencies — pure stdlib. Go 1.22 required.
 
 ## Architecture
 
-`uncertain_logic` is a Go library for reasoning about claims from sources that may lie, be ignorant, or contradict each other. It composes three formal systems:
+`uncertain_logic` is a Go library for reasoning about claims from sources that may lie, be ignorant, or contradict each other. It composes four formal systems:
 
 ### Packages
 
@@ -26,9 +26,11 @@ No external dependencies — pure stdlib. Go 1.22 required.
 
 **`temporal/`** — Allen's 13 interval relations. `Relate(a,b)` returns the relation; `Overlapping(a,b)` gates whether claims temporally conflict. `Open(desc)` creates a conservative interval that overlaps everything.
 
+**`argumentation/`** — Dung abstract argumentation frameworks extended with bipolar support (Cayrol & Lagasquie-Schiex 2005) for causal chain reasoning. Core types: `Argument`, `Attack` (Rebut/Undercut/Undermine), `Support`, `Framework`. Semantics: `GroundedExtension()` (least fixpoint), `PreferredExtensions()` (maximal admissible), `StableExtensions()`. `GroundedLabelling()` returns 3-valued In/Out/Undec. Support chains propagate defeat via `EffectiveAttacks()` (BAF flattening). `FindCausalChains()` discovers causal paths; `ChainStrength()` uses subjective multiplication; `ChainWeakestLink()` finds bottlenecks. Bridges: `LabelToBelnap()`, `CrossExtensionBelnap()` (Both when in some extensions but not others), `NarrativeEntropy()` (Shannon entropy over extensions).
+
 **`models/`** — Domain entities: `Actor` (source with reliability), `Subject`, `Claim`, `Evidence`, `Proposition`, `ConflictOfInterest`. Nine source types (`Analyst`, `Journalist`, `Expert`, `Insider`, `Regulator`, `Institutional`, `Anonymous`, `SocialMedia`, `Troll`) all default to reliability 0.6. `ConflictOfInterest` discounts reliability (disclosed ×0.80, undisclosed ×0.50).
 
-**`investigation/`** — Orchestrates the other three packages via a builder/DSL. This is the primary user-facing API.
+**`investigation/`** — Orchestrates the other four packages via a builder/DSL. This is the primary user-facing API.
 
 ### Investigation API (main entry point)
 
@@ -54,6 +56,18 @@ negated := investigation.Not(result)
 // Timeline views
 inv.SubjectTimeline(subjectID)               // claims grouped by temporal overlap
 inv.ActorBeliefHistory(actorID, subjectID)   // detect belief revisions
+
+// Argumentation framework (Dung semantics over claims)
+fw := inv.BuildArgumentFramework(subjectID, predicate, interval)
+ext := fw.GroundedExtension()                // defensible arguments (least fixpoint)
+labels := fw.GroundedLabelling()             // In/Out/Undec per argument
+pref := fw.PreferredExtensions()             // alternative narrative sets
+chains := fw.FindCausalChains()              // causal reasoning paths
+fw.ChainDefensible(chain)                    // is the full chain defensible?
+fw.ChainStrength(chain)                      // conjunction of link credibilities
+fw.ChainWeakestLink(chain)                   // bottleneck argument
+fw.NarrativeEntropy()                        // 0=resolved, high=contested
+fw.CrossExtensionBelnap(argID)               // Both if in some extensions but not others
 ```
 
 ### Key design invariants
@@ -62,3 +76,5 @@ inv.ActorBeliefHistory(actorID, subjectID)   // detect belief revisions
 - **Meta-claims enable reification**: `AssertMetaClaim` models attribution chains (journalist claims expert said X) without asserting the base claim is true.
 - **Depth-limited recursion** (default 3 levels): prevents infinite cycles when tracing meta-claim chains.
 - **`ClaimAnalysis`** holds both a Belnap value (categorical) and a subjective Opinion (probabilistic), exposing complementary views.
+- **Causal chain defeat propagation**: support links in the argumentation framework model causal dependencies; attacking the root of a support chain propagates defeat to all downstream arguments (BAF necessary support interpretation).
+- **Grounded extension = least fixpoint**: the most conservative defensible narrative. The gap between grounded (lower) and union of preferred extensions (upper) is the genuinely contested territory.

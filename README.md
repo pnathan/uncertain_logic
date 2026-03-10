@@ -2,11 +2,12 @@
 
 An AGPL3 Go library for reasoning about claims made by sources that may lie, be ignorant, or contradict each other — without the reasoning system exploding.
 
-The library composes three formal systems:
+The library composes four formal systems:
 
 - **Belnap four-valued logic** — truth status under contradiction
 - **Subjective logic (Jøsang)** — graded credibility with trust propagation
 - **Allen interval algebra** — temporal reasoning over event intervals
+- **Dung argumentation frameworks** — defensible reasoning under attack, extended with bipolar support (Cayrol & Lagasquie-Schiex 2005) for causal chain analysis
 
 Together they answer the five investigative questions about any claim:
 
@@ -25,8 +26,11 @@ uncertain_logic/
   belnap/          Four-valued logic values and operations
   subjective/      Opinion arithmetic and trust discounting
   temporal/        EventInterval and Allen's 13 relations
+  argumentation/   Dung frameworks, Grounded/Preferred/Stable semantics, causal chains
   models/          Actor, Subject, Claim, Evidence, Proposition
   investigation/   Investigation builder, Assert/Query DSL, analysis
+  viewer/          HTMX web viewer for argumentation frameworks
+  cmd/wmd-demo/    Iraq WMD intelligence failure demonstration
 ```
 
 ---
@@ -274,10 +278,148 @@ Default reliability when not specified: **0.6**. `_system` actor (used by `Asser
 
 ---
 
+## Argumentation frameworks
+
+The `argumentation` package implements Dung abstract argumentation (Dung 1995) extended with bipolar support (Cayrol & Lagasquie-Schiex 2005). This is the fourth formal leg, layered on top of the first three.
+
+### Building a framework from an investigation
+
+```go
+// Construct a Dung framework over all claims about a subject+predicate
+fw := inv.BuildArgumentFramework("bill42", "cost", iv)
+```
+
+The framework automatically:
+- Creates arguments from matching claims (carrying Belnap status and subjective opinion as strength)
+- Generates mutual **rebut** attacks between contradictory claims with overlapping intervals
+- Converts **refuting** meta-claims into rebut attacks
+- Converts **supporting** meta-claims into support links (for causal chains)
+
+### Semantics
+
+```go
+// Grounded extension: least fixpoint — the most conservative defensible set
+ext := fw.GroundedExtension()
+
+// Grounded labelling: three-valued In/Out/Undec per argument
+labels := fw.GroundedLabelling()
+
+// Preferred extensions: maximal admissible sets — alternative narrative scenarios
+pref := fw.PreferredExtensions()
+
+// Stable extensions: every non-member is attacked by a member
+stable := fw.StableExtensions()
+
+// Narrative entropy: 0 = one dominant narrative, higher = more contested
+entropy := fw.NarrativeEntropy()
+```
+
+### Causal chains
+
+Support links model causal dependencies. Attacking the root of a chain propagates defeat to all downstream arguments (BAF necessary support interpretation).
+
+```go
+chains := fw.FindCausalChains()
+for _, chain := range chains {
+    strength := fw.ChainStrength(chain)        // subjective multiplication across links
+    weak := fw.ChainWeakestLink(chain)          // bottleneck argument
+    defensible := fw.ChainDefensible(chain)     // is the full chain in grounded?
+}
+```
+
+### Belnap-Dung bridge
+
+Two complementary Belnap perspectives:
+- **Evidence-level** (`BelnapStatus`): from `FromCounts(supporting, refuting)` within a single claim
+- **Cross-extension** (`CrossExtensionBelnap`): `Both` when an argument appears in some preferred extensions but not others — genuine structural uncertainty
+
+```go
+combined := fw.BelnapStatus(argID)           // structural ⊔ evidence
+crossExt := fw.CrossExtensionBelnap(argID)   // Both if in some extensions, not others
+```
+
+---
+
+## Viewer
+
+The `viewer` package provides an HTMX-based web interface for exploring argumentation frameworks interactively.
+
+```go
+import "github.com/pnathan/uncertain_logic/viewer"
+
+// Blocks, serving the investigation at http://localhost:8080
+viewer.Serve(inv, ":8080")
+```
+
+Features:
+- **Static hierarchical graph layout** — rows = argumentation status (In/Out/Undec), columns = subject
+- **Click any node** to see its full analysis: Belnap status, opinion, attackers, evidence, extension membership
+- **Extensions panel** — grounded, preferred, and stable extensions with narrative entropy
+- **Causal chains panel** — chain paths, strength, weakest link, defensibility
+- Works with any `Investigation` object — generic, not demo-specific
+
+---
+
+## Iraq WMD demo
+
+`cmd/wmd-demo/` models the Iraq WMD intelligence failure (2002–2004) as a case study. It exercises all four formal systems on real-world intelligence analysis, demonstrating how the library handles:
+
+- 14 actors (CIA, DIA, INR, DOE, MI6, BND, Curveball, INC, UNMOVIC, IAEA, Powell, Wilson, ISG)
+- 7 subjects (aluminum tubes, mobile bio-labs, Niger uranium, nuclear program, chemical weapons, biological program, long-range missiles)
+- ~66 claims with supporting/refuting evidence
+- Post-invasion ground truth (ISG findings) contradicting pre-invasion assessments
+
+```bash
+go run ./cmd/wmd-demo/
+# Prints Q() results, then opens viewer at http://localhost:8080
+```
+
+---
+
+## Known limitations
+
+The four pillars cover epistemological reasoning — determining what's true and how credible it is. Four known gaps remain outside the current architecture:
+
+### 1. Spatial reasoning
+
+Allen interval algebra handles *when* but not *where*. Alibi reasoning ("could the suspect travel from A to B in the available time?"), geospatial intelligence, and supply chain tracking all require spatial relations that the library does not model. A region calculus or spatial constraint system would be a fifth pillar alongside temporal.
+
+### 2. Source independence / correlation
+
+`ConsensusFuse` assumes the opinions being fused are **independent**. When sources share an upstream origin — two journalists quoting the same leaker, or multiple intelligence agencies routing a single fabricator's reporting — fusing them as independent double-counts evidence and artificially reduces uncertainty.
+
+The Iraq WMD case is the canonical example: CIA, DIA, and MI6 all reported mobile bio-labs, appearing to independently corroborate. All three traced back to a single source (Curveball) routed through BND. Independence-aware fusion would have treated this as one low-reliability opinion, not three corroborating ones.
+
+Addressing this requires a **source dependency graph** and a modified fusion operator (Jøsang describes dependent-source fusion in his 2016 monograph). The meta-claim architecture can partially surface shared sourcing, but the fusion math does not currently discount for it.
+
+### 3. Dynamic reliability
+
+`Actor.BaseReliability` is a single static scalar. In practice, reliability varies along two dimensions:
+
+- **Temporal**: a source becomes more or less reliable over time (witness contamination after coaching, institutional capture, analyst burnout). A `ReliabilityAt(time.Time)` function would capture this.
+- **Topic-specific**: a nuclear physicist is expert-grade on enrichment but analyst-grade on biological agents. `ConflictOfInterest` is subject-scoped, which partially handles directional bias, but domain expertise boundaries are a different concept. A `ReliabilityFor(subjectID)` or topic-tagged reliability would be needed.
+
+### 4. Denial and deception (D&D)
+
+The hardest gap. The system models sources as noisy channels with fixed reliability. Real adversaries are **strategic agents** who build credibility (truthful leaks) then spend it (disinformation at a critical moment). Their behavior depends on what they believe the analyst believes — a game-theoretic interaction that none of the four pillars model.
+
+The `Troll` source type and low reliability settings approximate known bad actors, but do not capture an adversary who is *sometimes truthful by design*. Addressing D&D would require modeling sources as agents with objectives, beliefs, and strategies — a fundamentally different paradigm from the current signal-processing approach.
+
+| # | Limitation | Difficulty | Architectural impact |
+|---|-----------|------------|---------------------|
+| 1 | Spatial reasoning | Medium | New pillar alongside temporal |
+| 2 | Source independence | Medium | Dependency graph + modified fusion operator |
+| 3 | Dynamic reliability | Medium | `ReliabilityAt(time, subject)` replacing scalar |
+| 4 | D&D / adversarial sources | Hard | Game-theoretic agent modeling |
+
+Items 1–3 are extensions within the current paradigm. Item 4 is a paradigm shift.
+
+---
+
 ## Design notes
 
 **Why not Bayesian P(A|B)?** Bayesian reasoning degrades on genuinely rare, high-stakes events (lottery paradox). Belnap's `B` value is stable — contradicted claims stay `B` rather than collapsing to a probability that loses the contradiction signal.
 
 **Why not just use databases?** Logical evaluation (Belnap aggregation, subjective fusion, meta-claim recursion) happens in Go, not SQL. Storage is the `map[string]*Claim` in `Investigation`; the interface is stable if you swap it for SQLite later.
 
-**Composability**: `belnap`, `subjective`, and `temporal` are pure logic packages with no dependencies on each other. `models` depends only on `temporal`. `investigation` is the only package that wires them together.
+**Composability**: `belnap`, `subjective`, `temporal`, and `argumentation` are pure logic packages with minimal dependencies. `argumentation` depends on `belnap` and `subjective` (for Belnap bridge and chain strength). `models` depends only on `temporal`. `investigation` is the only package that wires all four together. `viewer` depends on `investigation` and `argumentation`.
