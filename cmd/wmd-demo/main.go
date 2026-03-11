@@ -93,12 +93,22 @@ func buildIraqWMDInvestigation() *investigation.Investigation {
 
 	inv.AddActor("inr", "INR (State Dept Bureau of Intelligence and Research)", models.Analyst,
 		investigation.WithReliability(0.80),
+		investigation.WithCompetence("active-program", 0.90), // geopolitical analysis — INR's core strength
+		investigation.WithCompetence("purpose", 0.70),        // technical evidence assessment
+		investigation.WithCompetence("operational-link", 0.85),
 		investigation.WithActorNotes("Smallest IC agency; filed formal dissent on nuclear claims in the 2002 NIE. "+
 			"Post-invasion, proved to be the most accurate assessor"))
 
 	inv.AddActor("doe", "DOE (Department of Energy)", models.Expert,
 		investigation.WithReliability(0.85),
-		investigation.WithActorNotes("Technical nuclear expertise; dissented on aluminum tubes purpose"))
+		investigation.WithCompetence("purpose", 0.95),         // centrifuge/nuclear hardware — DOE's core domain
+		investigation.WithCompetence("active-program", 0.85),  // nuclear program assessment
+		investigation.WithCompetence("existence", 0.40),       // biological weapons — outside DOE expertise
+		investigation.WithCompetence("stockpiles", 0.40),      // chemical weapons — outside DOE expertise
+		investigation.WithCompetence("operational-link", 0.30), // geopolitical analysis — not DOE's domain
+		investigation.WithDefaultCompetence(0.50),
+		investigation.WithActorNotes("Technical nuclear expertise; dissented on aluminum tubes purpose. "+
+			"High competence on nuclear physics, low on biological/chemical weapons"))
 
 	// Foreign intelligence
 	inv.AddActor("mi6", "MI6 (UK Secret Intelligence Service)", models.Institutional,

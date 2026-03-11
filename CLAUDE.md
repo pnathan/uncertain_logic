@@ -28,7 +28,7 @@ No external dependencies — pure stdlib. Go 1.22 required.
 
 **`argumentation/`** — Dung abstract argumentation frameworks extended with bipolar support (Cayrol & Lagasquie-Schiex 2005) for causal chain reasoning. Core types: `Argument`, `Attack` (Rebut/Undercut/Undermine), `Support`, `Framework`. Semantics: `GroundedExtension()` (least fixpoint), `PreferredExtensions()` (maximal admissible), `StableExtensions()`. `GroundedLabelling()` returns 3-valued In/Out/Undec. Support chains propagate defeat via `EffectiveAttacks()` (BAF flattening). `FindCausalChains()` discovers causal paths; `ChainStrength()` uses subjective multiplication; `ChainWeakestLink()` finds bottlenecks. Bridges: `LabelToBelnap()`, `CrossExtensionBelnap()` (Both when in some extensions but not others), `NarrativeEntropy()` (Shannon entropy over extensions).
 
-**`models/`** — Domain entities: `Actor` (source with reliability), `Subject`, `Claim`, `Evidence`, `Proposition`, `ConflictOfInterest`. Nine source types (`Analyst`, `Journalist`, `Expert`, `Insider`, `Regulator`, `Institutional`, `Anonymous`, `SocialMedia`, `Troll`) all default to reliability 0.6. `ConflictOfInterest` discounts reliability (disclosed ×0.80, undisclosed ×0.50).
+**`models/`** — Domain entities: `Actor` (source with reliability and per-predicate competence), `Subject`, `Claim`, `Evidence`, `Proposition`, `ConflictOfInterest`. Nine source types (`Analyst`, `Journalist`, `Expert`, `Insider`, `Regulator`, `Institutional`, `Anonymous`, `SocialMedia`, `Troll`) all default to reliability 0.6. `ConflictOfInterest` discounts reliability (disclosed ×0.80, undisclosed ×0.50). `Competence` map holds per-predicate competence scores; effective reliability = disposition × competence(topic) × conflict_penalties.
 
 **`investigation/`** — Orchestrates the other four packages via a builder/DSL. This is the primary user-facing API.
 
@@ -36,7 +36,7 @@ No external dependencies — pure stdlib. Go 1.22 required.
 
 ```go
 inv := investigation.New("research question")
-inv.AddActor(id, name, sourceType, opts...)   // WithReliability(float64)
+inv.AddActor(id, name, sourceType, opts...)   // WithReliability, WithCompetence, WithDefaultCompetence
 inv.AddSubject(id, name, type)
 claimID := inv.AssertClaim(actorID, prop, assertionTime, interval, opts...)
 inv.AssertMetaClaim(actorID, targetClaimID, predicate, value, time, opts...)

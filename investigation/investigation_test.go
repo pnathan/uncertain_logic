@@ -116,7 +116,7 @@ func TestContradicted(t *testing.T) {
 	}
 	// Conflict of interest (undisclosed long) reduces actor trust
 	actor := inv.actors["analyst"]
-	adjusted := actor.AdjustedReliability("stockx")
+	adjusted := actor.AdjustedReliability("stockx", "revenue")
 	if adjusted >= actor.BaseReliability {
 		t.Errorf("adjusted reliability should be lower than base: %.3f vs %.3f", adjusted, actor.BaseReliability)
 	}
@@ -1631,5 +1631,72 @@ func TestDefaultWeightIsOne(t *testing.T) {
 	// Actor r + evidence 1.0 should be reflected in PositiveEvidence
 	if a.PositiveEvidence < 1.0 {
 		t.Errorf("PositiveEvidence=%.4f, should include at least 1.0 from default-weight evidence", a.PositiveEvidence)
+	}
+}
+
+// TestDomainSpecificCompetence verifies that the same source produces different
+// credibility opinions for claims about topics where it has high vs low competence.
+func TestDomainSpecificCompetence(t *testing.T) {
+	inv := New("domain competence test")
+
+	// Nuclear physicist: expert on enrichment, not on biological weapons
+	inv.AddActor("physicist", "Dr. Nuclear", models.Expert,
+		WithReliability(0.85),
+		WithCompetence("enrichment-capability", 0.95),
+		WithCompetence("biological-program", 0.40),
+		WithDefaultCompetence(0.60),
+	)
+	inv.AddSubject("country-x", "Country X", "country")
+
+	now := mustTime(2024, 6, 1)
+	iv := mkInterval(2024, 1, 1, 2024, 12, 31)
+
+	// Claim about nuclear topic (high competence)
+	nuclearClaim := inv.AssertClaim("physicist",
+		prop("country-x", "enrichment-capability", "advanced"), now, iv)
+	inv.AddEvidence(nuclearClaim, "centrifuge analysis", models.Supports, WithWeight(1.0))
+
+	// Claim about bio topic (low competence)
+	bioClaim := inv.AssertClaim("physicist",
+		prop("country-x", "biological-program", "active"), now, iv)
+	inv.AddEvidence(bioClaim, "lab observation", models.Supports, WithWeight(1.0))
+
+	nuclearAnalysis, err := inv.AnalyzeClaim(nuclearClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bioAnalysis, err := inv.AnalyzeClaim(bioClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nuclearEP := nuclearAnalysis.Credibility.ExpectedProbability()
+	bioEP := bioAnalysis.Credibility.ExpectedProbability()
+
+	// Nuclear claim should have higher credibility than bio claim
+	if nuclearEP <= bioEP {
+		t.Errorf("nuclear E[p]=%.4f should exceed bio E[p]=%.4f (competence difference)", nuclearEP, bioEP)
+	}
+
+	t.Logf("Nuclear E[p]=%.4f, Bio E[p]=%.4f (delta=%.4f)", nuclearEP, bioEP, nuclearEP-bioEP)
+}
+
+// TestWithCompetenceBuilderOption verifies the WithCompetence option works via AddActor.
+func TestWithCompetenceBuilderOption(t *testing.T) {
+	inv := New("competence builder test")
+	actor := inv.AddActor("analyst", "Sector Analyst", models.Analyst,
+		WithReliability(0.75),
+		WithCompetence("tech-valuation", 0.90),
+		WithCompetence("commodities", 0.40),
+	)
+
+	if actor.Competence == nil {
+		t.Fatal("Competence map should be set")
+	}
+	if actor.Competence["tech-valuation"] != 0.90 {
+		t.Errorf("tech-valuation competence = %v, want 0.90", actor.Competence["tech-valuation"])
+	}
+	if actor.Competence["commodities"] != 0.40 {
+		t.Errorf("commodities competence = %v, want 0.40", actor.Competence["commodities"])
 	}
 }

@@ -76,8 +76,8 @@ func (a *ClaimAnalysis) FiveQuestions() string {
 
 	if a.Actor != nil {
 		subjectID := a.Claim.SubjectID
-		adj := a.Actor.AdjustedReliability(subjectID)
-		sb.WriteString(fmt.Sprintf("   Actor reliability: %.3f (base=%.3f, after conflicts)\n",
+		adj := a.Actor.AdjustedReliability(subjectID, a.Claim.Predicate)
+		sb.WriteString(fmt.Sprintf("   Actor reliability: %.3f (base=%.3f, after competence+conflicts)\n",
 			adj, a.Actor.BaseReliability))
 	}
 
@@ -114,7 +114,7 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 	// Step 1: Actor trust opinion
 	var adjustedReliability float64 = 0.6
 	if actor != nil {
-		adjustedReliability = actor.AdjustedReliability(c.SubjectID)
+		adjustedReliability = actor.AdjustedReliability(c.SubjectID, c.Predicate)
 	}
 	trust := subjective.FromReliability(adjustedReliability, inv.BaseRate)
 
@@ -215,7 +215,7 @@ func (inv *Investigation) analyzeClaim(claimID string, depth int) (*ClaimAnalysi
 			metaActor := inv.actors[meta.ActorID]
 			var trustFactor float64
 			if metaActor != nil {
-				trustFactor = metaActor.AdjustedReliability(c.SubjectID)
+				trustFactor = metaActor.AdjustedReliability(c.SubjectID, c.Predicate)
 			}
 
 			// Dogmatic meta-claims contribute nothing (r=0, s=0 from short-circuit)
