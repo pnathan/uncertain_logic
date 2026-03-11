@@ -32,6 +32,42 @@ func main() {
 	fmt.Println(inv.Summary())
 	fmt.Println()
 
+	// Show the echo-chamber effect on mobile-bio-labs.
+	// We build a second investigation WITHOUT dependencies to get a clean
+	// comparison, avoiding mutation of the primary investigation's state.
+	fmt.Println("─── Echo-Chamber Effect: mobile-bio-labs / existence ───")
+
+	bioQuery := temporal.Open("full timeline")
+
+	// Build a separate no-dependency investigation for the "before" baseline.
+	invNoDeps := buildIraqWMDInvestigation()
+	resultsBefore := invNoDeps.Q("mobile-bio-labs", "existence", bioQuery)
+	if len(resultsBefore) > 0 {
+		r := resultsBefore[0]
+		fmt.Printf("  WITHOUT dependency-aware fusion (echo-chamber):\n")
+		fmt.Printf("    Belnap: %s  |  E[p]=%.3f  |  b=%.3f d=%.3f u=%.3f\n",
+			r.Belnap, r.Opinion.ExpectedProbability(),
+			r.Opinion.Belief, r.Opinion.Disbelief, r.Opinion.Uncertainty)
+	}
+
+	// Declare source dependencies on the primary investigation: the Curveball echo chamber
+	inv.DeclareSourceDependency("cia", "curveball")
+	inv.DeclareSourceDependency("dia", "curveball")
+	inv.DeclareSourceDependency("mi6", "curveball")
+	inv.DeclareSourceDependency("powell", "cia")
+	inv.DeclareSourceDependency("inc", "curveball")
+
+	// After: dependency-aware fusion (ABF within groups, CBF across)
+	resultsAfter := inv.Q("mobile-bio-labs", "existence", bioQuery)
+	if len(resultsAfter) > 0 {
+		r := resultsAfter[0]
+		fmt.Printf("  WITH dependency-aware fusion (echo-chain corrected):\n")
+		fmt.Printf("    Belnap: %s  |  E[p]=%.3f  |  b=%.3f d=%.3f u=%.3f\n",
+			r.Belnap, r.Opinion.ExpectedProbability(),
+			r.Opinion.Belief, r.Opinion.Disbelief, r.Opinion.Uncertainty)
+	}
+	fmt.Println()
+
 	// Analyze key claims and print five-questions output
 	subjects := []struct {
 		subjectID string

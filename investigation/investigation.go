@@ -23,6 +23,8 @@ type Investigation struct {
 	claims           map[string]*models.Claim
 	evidence         map[string]*models.Evidence
 	findings         map[string]*Finding
+	sourceDeps       map[string]map[string]bool // actorID → set of upstream actorIDs
+	depComponents    map[string]string          // cached connected-component partition; nil when no deps declared
 	idCounter        int
 }
 
@@ -36,6 +38,7 @@ func New(question string) *Investigation {
 		claims:           make(map[string]*models.Claim),
 		evidence:         make(map[string]*models.Evidence),
 		findings:         make(map[string]*Finding),
+		sourceDeps:       make(map[string]map[string]bool),
 	}
 }
 
@@ -91,6 +94,163 @@ func (inv *Investigation) LoadFindings(findings []Finding) {
 	for _, f := range findings {
 		f := f
 		inv.findings[f.ID] = &f
+	}
+}
+
+// --- Source dependency declarations ---
+
+// DeclareSourceDependency records that actorID depends on upstreamID (e.g. CIA
+// depends on Curveball as an upstream source). When Q() fuses opinions, actors
+// sharing a connected component in the dependency graph are fused with ABF
+// (idempotent) rather than CBF, preventing echo-chamber amplification.
+//
+// Both actor IDs must already be registered. The dependency graph is undirected
+// for grouping purposes: if A depends on B, they are in the same fusion group.
+func (inv *Investigation) DeclareSourceDependency(actorID, upstreamID string) error {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if _, ok := inv.actors[actorID]; !ok {
+		return fmt.Errorf("actor %q not found", actorID)
+	}
+	if _, ok := inv.actors[upstreamID]; !ok {
+		return fmt.Errorf("upstream actor %q not found", upstreamID)
+	}
+	if inv.sourceDeps[actorID] == nil {
+		inv.sourceDeps[actorID] = make(map[string]bool)
+	}
+	inv.sourceDeps[actorID][upstreamID] = true
+	inv.rebuildDepComponents() // eagerly rebuild under WLock
+	return nil
+}
+
+// SourceDependencies returns a defensive copy of the source dependency graph.
+func (inv *Investigation) SourceDependencies() map[string][]string {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
+	out := make(map[string][]string, len(inv.sourceDeps))
+	for actor, upstreams := range inv.sourceDeps {
+		ids := make([]string, 0, len(upstreams))
+		for id := range upstreams {
+			ids = append(ids, id)
+		}
+		out[actor] = ids
+	}
+	return out
+}
+
+// LoadSourceDependencies bulk-imports dependency edges (for persistence).
+// Unlike DeclareSourceDependency, this does not validate actor existence,
+// since it is intended for restoring previously-persisted state.
+func (inv *Investigation) LoadSourceDependencies(deps map[string][]string) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	for actor, upstreams := range deps {
+		if inv.sourceDeps[actor] == nil {
+			inv.sourceDeps[actor] = make(map[string]bool)
+		}
+		for _, u := range upstreams {
+			inv.sourceDeps[actor][u] = true
+		}
+	}
+	inv.rebuildDepComponents() // eagerly rebuild under WLock
+}
+
+// dependencyGroups computes connected components from the source dependency
+// graph over the given actor IDs. Returns groups of actor IDs to be fused
+// with ABF. Singletons for actors with no declared dependencies.
+//
+// The dependency graph is treated as undirected for grouping: if actors A and B
+// both depend on upstream source C, they belong to the same group even if C has
+// no claims in the query results. This correctly handles the echo-chamber
+// pattern where the shared source may not appear in the matched claims.
+//
+// Note: dependencies are topic-agnostic — declaring a dependency groups actors
+// for ALL queries, not just queries about the topic that motivated the
+// dependency. This is a simplification; see Josang 2016 Ch. 12 for the
+// theoretically complete claim-level dependency model.
+//
+// Caller must hold at least RLock. depComponents is read-only here;
+// it is rebuilt eagerly under WLock by DeclareSourceDependency and
+// LoadSourceDependencies whenever the dependency graph changes.
+func (inv *Investigation) dependencyGroups(actorIDs []string) [][]string {
+	if len(inv.sourceDeps) == 0 {
+		// Fast path: no dependencies declared → all singletons.
+		groups := make([][]string, len(actorIDs))
+		for i, id := range actorIDs {
+			groups[i] = []string{id}
+		}
+		return groups
+	}
+
+	// depComponents is populated eagerly by mutation methods under WLock,
+	// so it is safe to read here under RLock.
+	groupMap := make(map[string][]string)
+	for _, id := range actorIDs {
+		root, ok := inv.depComponents[id]
+		if !ok {
+			// Actor not in any dependency edge → singleton.
+			root = id
+		}
+		groupMap[root] = append(groupMap[root], id)
+	}
+
+	groups := make([][]string, 0, len(groupMap))
+	for _, g := range groupMap {
+		groups = append(groups, g)
+	}
+	return groups
+}
+
+// rebuildDepComponents computes the connected-component partition of the
+// source dependency graph using union-find. Stores the result in
+// inv.depComponents for reuse across Q() calls.
+// Caller must hold WLock (called from DeclareSourceDependency/LoadSourceDependencies).
+func (inv *Investigation) rebuildDepComponents() {
+	parent := make(map[string]string)
+	rank := make(map[string]int)
+
+	ensureNode := func(id string) {
+		if _, ok := parent[id]; !ok {
+			parent[id] = id
+		}
+	}
+
+	var find func(string) string
+	find = func(x string) string {
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+
+	union := func(a, b string) {
+		ensureNode(a)
+		ensureNode(b)
+		ra, rb := find(a), find(b)
+		if ra == rb {
+			return
+		}
+		if rank[ra] < rank[rb] {
+			ra, rb = rb, ra
+		}
+		parent[rb] = ra
+		if rank[ra] == rank[rb] {
+			rank[ra]++
+		}
+	}
+
+	// Union ALL dependency edges. Even if an upstream isn't in the query,
+	// it serves as a bridge connecting its dependents.
+	for actor, upstreams := range inv.sourceDeps {
+		for upstream := range upstreams {
+			union(actor, upstream)
+		}
+	}
+
+	// Flatten all paths and store as actorID → root.
+	inv.depComponents = make(map[string]string, len(parent))
+	for id := range parent {
+		inv.depComponents[id] = find(id)
 	}
 }
 
@@ -401,8 +561,12 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 	}
 
 	// Compute composite result
-	// D3: ABF within same actor, CBF across actors.
-	// Josang, Diaz & Rifqi (2010) §3-4: CBF for independent, ABF for dependent sources.
+	// Three-level fusion (Josang, Diaz & Rifqi 2010):
+	//   1. Within each actor: ABF (idempotent, same-source dependency)
+	//   2. Within each dependency group: ABF across per-actor-fused opinions
+	//   3. Across independent groups: CBF
+	// When no dependencies are declared, step 2 is identity (all singletons)
+	// and step 3 reduces to CBF-of-all = backward-compatible behavior.
 	actorOpinions := make(map[string][]subjective.Opinion)
 	supportCount, refuteCount := 0, 0
 	for _, c := range matched {
@@ -425,13 +589,25 @@ func (inv *Investigation) Q(subjectID, predicate string, at temporal.EventInterv
 	status := belnap.FromCounts(supportCount, refuteCount)
 	var fusedOpinion subjective.Opinion
 	if len(actorOpinions) > 0 {
-		// Within each actor: ABF (idempotent, same-source dependency)
-		var perActorFused []subjective.Opinion
-		for _, group := range actorOpinions {
-			perActorFused = append(perActorFused, subjective.AveragingFuse(group...))
+		// Step 1: Within each actor: ABF (idempotent, same-source dependency)
+		perActorFused := make(map[string]subjective.Opinion, len(actorOpinions))
+		actorIDs := make([]string, 0, len(actorOpinions))
+		for actorID, group := range actorOpinions {
+			perActorFused[actorID] = subjective.AveragingFuse(group...)
+			actorIDs = append(actorIDs, actorID)
 		}
-		// Across actors: CBF (independent sources)
-		fusedOpinion = subjective.ConsensusFuse(perActorFused...)
+
+		// Step 2-3: Group by dependency, ABF within groups, CBF across groups
+		groups := inv.dependencyGroups(actorIDs)
+		var groupFused []subjective.Opinion
+		for _, group := range groups {
+			var groupOpinions []subjective.Opinion
+			for _, actorID := range group {
+				groupOpinions = append(groupOpinions, perActorFused[actorID])
+			}
+			groupFused = append(groupFused, subjective.AveragingFuse(groupOpinions...))
+		}
+		fusedOpinion = subjective.ConsensusFuse(groupFused...)
 	} else {
 		fusedOpinion = subjective.Vacuous(inv.BaseRate)
 	}
