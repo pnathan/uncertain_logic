@@ -732,6 +732,128 @@ func TestAbfTwo_ConfSumNearZero(t *testing.T) {
 	}
 }
 
+// --- N-ary ABF tests (direct formula vs pairwise) ---
+
+func TestAveragingFuseNaryDirect(t *testing.T) {
+	// Verify n-ary ABF formula for 3 sources with different uncertainties.
+	// Manual computation from Josang, Diaz & Rifqi (2010) Eq. 16:
+	//   o1 = {b=0.3, d=0.1, u=0.6, a=0.5}
+	//   o2 = {b=0.4, d=0.2, u=0.4, a=0.5}
+	//   o3 = {b=0.2, d=0.3, u=0.5, a=0.5}
+	//
+	// prodU = 0.6 * 0.4 * 0.5 = 0.12
+	// K1 = prodU/u1 = 0.12/0.6 = 0.2
+	// K2 = prodU/u2 = 0.12/0.4 = 0.3
+	// K3 = prodU/u3 = 0.12/0.5 = 0.24
+	// K  = 0.2 + 0.3 + 0.24 = 0.74
+	//
+	// b = (0.3*0.2 + 0.4*0.3 + 0.2*0.24) / 0.74
+	//   = (0.06 + 0.12 + 0.048) / 0.74 = 0.228/0.74 ≈ 0.308108
+	// d = (0.1*0.2 + 0.2*0.3 + 0.3*0.24) / 0.74
+	//   = (0.02 + 0.06 + 0.072) / 0.74 = 0.152/0.74 ≈ 0.205405
+	// u = 3 * 0.12 / 0.74 = 0.36/0.74 ≈ 0.486486
+
+	o1 := Opinion{0.3, 0.1, 0.6, 0.5}
+	o2 := Opinion{0.4, 0.2, 0.4, 0.5}
+	o3 := Opinion{0.2, 0.3, 0.5, 0.5}
+
+	result := AveragingFuse(o1, o2, o3)
+	assertInvariant(t, "n-ary ABF direct", result)
+
+	wantB := 0.228 / 0.74
+	wantD := 0.152 / 0.74
+	wantU := 0.36 / 0.74
+
+	if !approx(result.Belief, wantB) {
+		t.Errorf("n-ary ABF belief = %.9f, want %.9f", result.Belief, wantB)
+	}
+	if !approx(result.Disbelief, wantD) {
+		t.Errorf("n-ary ABF disbelief = %.9f, want %.9f", result.Disbelief, wantD)
+	}
+	if !approx(result.Uncertainty, wantU) {
+		t.Errorf("n-ary ABF uncertainty = %.9f, want %.9f", result.Uncertainty, wantU)
+	}
+}
+
+func TestAveragingFuseNaryVsPairwise(t *testing.T) {
+	// Show that pairwise ABF iteration != n-ary ABF for heterogeneous uncertainties.
+	// This is the reason we need the direct n-ary formula.
+	o1 := Opinion{0.3, 0.1, 0.6, 0.5}
+	o2 := Opinion{0.5, 0.1, 0.4, 0.5}
+	o3 := Opinion{0.1, 0.4, 0.5, 0.5}
+
+	// N-ary direct (correct)
+	nary := AveragingFuse(o1, o2, o3)
+
+	// Pairwise iteration (incorrect for n>2): ABF(ABF(o1,o2), o3)
+	pair12 := AveragingFuse(o1, o2)
+	pairwise := AveragingFuse(pair12, o3)
+
+	// They should differ for heterogeneous uncertainties
+	if approx(nary.Belief, pairwise.Belief) &&
+		approx(nary.Disbelief, pairwise.Disbelief) &&
+		approx(nary.Uncertainty, pairwise.Uncertainty) {
+		t.Errorf("n-ary and pairwise ABF should differ for heterogeneous uncertainties\n"+
+			"  n-ary:    %+v\n  pairwise: %+v", nary, pairwise)
+	}
+
+	// Both should satisfy invariant
+	assertInvariant(t, "n-ary ABF", nary)
+	assertInvariant(t, "pairwise ABF", pairwise)
+}
+
+func TestAveragingFuseNaryMultiDogmaticMixed(t *testing.T) {
+	// When 2+ dogmatic opinions are mixed with non-dogmatic opinions,
+	// the n-ary formula degenerates (K_i=0 for all i). The implementation
+	// averages the dogmatic subset and discards non-dogmatic opinions.
+	// This test pins that behavior.
+	d1 := DogmaticTrue(0.5)
+	d2 := DogmaticFalse(0.5)
+	partial := Opinion{0.4, 0.2, 0.4, 0.5}
+
+	result := AveragingFuse(d1, d2, partial)
+	// Should average the two dogmatics, ignoring partial
+	if !approx(result.Belief, 0.5) || !approx(result.Disbelief, 0.5) || !approx(result.Uncertainty, 0.0) {
+		t.Errorf("ABF(dogT, dogF, partial) = %+v, want {0.5, 0.5, 0, 0.5}", result)
+	}
+	assertInvariant(t, "multi-dogmatic mixed ABF", result)
+
+	// Single dogmatic still dominates over non-dogmatics
+	dog := DogmaticTrue(0.5)
+	p1 := Opinion{0.3, 0.3, 0.4, 0.5}
+	p2 := Opinion{0.1, 0.6, 0.3, 0.5}
+	single := AveragingFuse(dog, p1, p2)
+	if !approx(single.Belief, 1.0) || !approx(single.Uncertainty, 0.0) {
+		t.Errorf("ABF(dogT, p1, p2) = %+v, want DogmaticTrue", single)
+	}
+	assertInvariant(t, "single-dogmatic mixed ABF", single)
+}
+
+func TestAveragingFuseNaryIdempotent(t *testing.T) {
+	// ABF(o,o,...,o) = o for any opinion o. This is the key idempotency property.
+	cases := []struct {
+		name string
+		o    Opinion
+		n    int
+	}{
+		{"partial 3x", Opinion{0.4, 0.2, 0.4, 0.5}, 3},
+		{"partial 5x", Opinion{0.4, 0.2, 0.4, 0.5}, 5},
+		{"high-belief 4x", Opinion{0.7, 0.1, 0.2, 0.5}, 4},
+		{"near-vacuous 3x", Opinion{0.01, 0.01, 0.98, 0.5}, 3},
+	}
+	for _, c := range cases {
+		copies := make([]Opinion, c.n)
+		for i := range copies {
+			copies[i] = c.o
+		}
+		result := AveragingFuse(copies...)
+		if !approx(result.Belief, c.o.Belief) || !approx(result.Disbelief, c.o.Disbelief) || !approx(result.Uncertainty, c.o.Uncertainty) {
+			t.Errorf("ABF idempotent %s: got %+v, want %+v", c.name, result, c.o)
+		}
+		assertInvariant(t, "ABF idempotent "+c.name, result)
+	}
+}
+
 // --- Cross-cutting property tests ---
 
 func TestCBF_Commutativity(t *testing.T) {
