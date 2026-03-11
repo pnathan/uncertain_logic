@@ -2,6 +2,7 @@ package investigation
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/pnathan/uncertain_logic/belnap"
 	"github.com/pnathan/uncertain_logic/models"
+	"github.com/pnathan/uncertain_logic/subjective"
 	"github.com/pnathan/uncertain_logic/temporal"
 )
 
@@ -1631,5 +1633,370 @@ func TestDefaultWeightIsOne(t *testing.T) {
 	// Actor r + evidence 1.0 should be reflected in PositiveEvidence
 	if a.PositiveEvidence < 1.0 {
 		t.Errorf("PositiveEvidence=%.4f, should include at least 1.0 from default-weight evidence", a.PositiveEvidence)
+	}
+}
+
+// =====================================================================
+// Source Dependency Tests (Issue #10: Dependent-Source Fusion)
+// =====================================================================
+
+const depEps = 1e-6
+
+func depApprox(a, b float64) bool { return math.Abs(a-b) < depEps }
+
+// TestDeclareSourceDependencyBasic: edges stored and retrievable.
+func TestDeclareSourceDependencyBasic(t *testing.T) {
+	inv := New("dep basic")
+	inv.AddActor("a", "A", models.Analyst)
+	inv.AddActor("b", "B", models.Analyst)
+	inv.AddActor("c", "C", models.Analyst)
+
+	if err := inv.DeclareSourceDependency("a", "b"); err != nil {
+		t.Fatalf("DeclareSourceDependency(a,b): %v", err)
+	}
+	if err := inv.DeclareSourceDependency("a", "c"); err != nil {
+		t.Fatalf("DeclareSourceDependency(a,c): %v", err)
+	}
+
+	deps := inv.SourceDependencies()
+	if len(deps["a"]) != 2 {
+		t.Errorf("expected 2 upstream deps for 'a', got %d", len(deps["a"]))
+	}
+
+	// Verify edges exist
+	upstreams := make(map[string]bool)
+	for _, u := range deps["a"] {
+		upstreams[u] = true
+	}
+	if !upstreams["b"] || !upstreams["c"] {
+		t.Errorf("expected upstreams {b,c}, got %v", deps["a"])
+	}
+}
+
+// TestDeclareSourceDependencyUnknownActor: unknown actor ID → error.
+func TestDeclareSourceDependencyUnknownActor(t *testing.T) {
+	inv := New("dep unknown")
+	inv.AddActor("a", "A", models.Analyst)
+
+	if err := inv.DeclareSourceDependency("a", "unknown"); err == nil {
+		t.Error("expected error for unknown upstream actor, got nil")
+	}
+	if err := inv.DeclareSourceDependency("unknown", "a"); err == nil {
+		t.Error("expected error for unknown actor, got nil")
+	}
+}
+
+// TestLoadSourceDependencies: bulk import and round-trip.
+func TestLoadSourceDependencies(t *testing.T) {
+	inv := New("load deps")
+	inv.AddActor("a", "A", models.Analyst)
+	inv.AddActor("b", "B", models.Analyst)
+	inv.AddActor("c", "C", models.Analyst)
+
+	deps := map[string][]string{
+		"a": {"b", "c"},
+		"b": {"c"},
+	}
+	inv.LoadSourceDependencies(deps)
+
+	got := inv.SourceDependencies()
+	if len(got["a"]) != 2 {
+		t.Errorf("expected 2 deps for 'a', got %d", len(got["a"]))
+	}
+	if len(got["b"]) != 1 {
+		t.Errorf("expected 1 dep for 'b', got %d", len(got["b"]))
+	}
+
+	// Verify the loaded deps affect Q() grouping: all 3 should be in one group
+	inv.AddSubject("co", "Company", "company")
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+	inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("b", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("c", prop("co", "outlook", "positive"), now, iv)
+
+	depResults := inv.Q("co", "outlook", iv)
+
+	// All in one group via transitive deps → ABF → same as single actor
+	invRef := New("ref")
+	invRef.AddActor("solo", "Solo", models.Analyst)
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("solo", prop("co", "outlook", "positive"), now, iv)
+	refEP := invRef.Q("co", "outlook", iv)[0].Opinion.ExpectedProbability()
+
+	if !depApprox(depResults[0].Opinion.ExpectedProbability(), refEP) {
+		t.Errorf("LoadSourceDependencies grouping: EP=%.6f, want %.6f", depResults[0].Opinion.ExpectedProbability(), refEP)
+	}
+}
+
+// TestDependentSourcesFusedWithABF: 3 dependent actors with identical opinions
+// produce the same EP as a single actor (ABF idempotency).
+func TestDependentSourcesFusedWithABF(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+	rel := 0.7
+
+	// Single-actor reference
+	invRef := New("ref")
+	invRef.AddActor("solo", "Solo", models.Analyst, WithReliability(rel))
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("solo", prop("co", "outlook", "positive"), now, iv)
+	refEP := invRef.Q("co", "outlook", iv)[0].Opinion.ExpectedProbability()
+
+	// 3 dependent actors sharing an upstream source
+	inv := New("dep fused")
+	inv.AddActor("upstream", "Upstream", models.Analyst, WithReliability(rel))
+	inv.AddActor("a", "A", models.Analyst, WithReliability(rel))
+	inv.AddActor("b", "B", models.Analyst, WithReliability(rel))
+	inv.AddActor("c", "C", models.Analyst, WithReliability(rel))
+	inv.AddSubject("co", "Company", "company")
+
+	inv.DeclareSourceDependency("a", "upstream")
+	inv.DeclareSourceDependency("b", "upstream")
+	inv.DeclareSourceDependency("c", "upstream")
+
+	// Each dependent actor makes 1 claim (same as solo)
+	inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("b", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("c", prop("co", "outlook", "positive"), now, iv)
+
+	depResults := inv.Q("co", "outlook", iv)
+	depEP := depResults[0].Opinion.ExpectedProbability()
+
+	// ABF idempotency: fusing 3 identical dependent opinions = single opinion
+	if !depApprox(depEP, refEP) {
+		t.Errorf("dependent 3-actor EP=%.6f, want single-actor EP=%.6f (ABF idempotency)", depEP, refEP)
+	}
+}
+
+// TestDependentSourcesVsIndependent: dependent sources preserve more uncertainty.
+func TestDependentSourcesVsIndependent(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+	rel := 0.7
+
+	setup := func(declareDeps bool) subjective.Opinion {
+		inv := New("dep vs indep")
+		inv.AddActor("upstream", "Upstream", models.Analyst, WithReliability(rel))
+		inv.AddActor("a", "A", models.Analyst, WithReliability(rel))
+		inv.AddActor("b", "B", models.Analyst, WithReliability(rel))
+		inv.AddActor("c", "C", models.Analyst, WithReliability(rel))
+		inv.AddSubject("co", "Company", "company")
+
+		if declareDeps {
+			inv.DeclareSourceDependency("a", "upstream")
+			inv.DeclareSourceDependency("b", "upstream")
+			inv.DeclareSourceDependency("c", "upstream")
+		}
+
+		inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+		inv.AssertClaim("b", prop("co", "outlook", "positive"), now, iv)
+		inv.AssertClaim("c", prop("co", "outlook", "positive"), now, iv)
+
+		return inv.Q("co", "outlook", iv)[0].Opinion
+	}
+
+	depOp := setup(true)
+	indepOp := setup(false)
+
+	// Dependent sources preserve more uncertainty than independent
+	if depOp.Uncertainty <= indepOp.Uncertainty {
+		t.Errorf("dependent u=%.6f should be > independent u=%.6f", depOp.Uncertainty, indepOp.Uncertainty)
+	}
+}
+
+// TestMixedDependentIndependentGroups: {a,b} dependent, c and d independent.
+func TestMixedDependentIndependentGroups(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+	rel := 0.7
+
+	// Full dependent (all 4 in one group)
+	invFullDep := New("full dep")
+	invFullDep.AddActor("src", "Src", models.Analyst, WithReliability(rel))
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invFullDep.AddActor(id, id, models.Analyst, WithReliability(rel))
+		invFullDep.DeclareSourceDependency(id, "src")
+	}
+	invFullDep.AddSubject("co", "Company", "company")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invFullDep.AssertClaim(id, prop("co", "outlook", "positive"), now, iv)
+	}
+	fullDepU := invFullDep.Q("co", "outlook", iv)[0].Opinion.Uncertainty
+
+	// Full independent (no deps)
+	invFullIndep := New("full indep")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invFullIndep.AddActor(id, id, models.Analyst, WithReliability(rel))
+	}
+	invFullIndep.AddSubject("co", "Company", "company")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invFullIndep.AssertClaim(id, prop("co", "outlook", "positive"), now, iv)
+	}
+	fullIndepU := invFullIndep.Q("co", "outlook", iv)[0].Opinion.Uncertainty
+
+	// Mixed: {a,b} dependent on shared source, c and d independent
+	invMixed := New("mixed")
+	invMixed.AddActor("shared", "Shared", models.Analyst, WithReliability(rel))
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invMixed.AddActor(id, id, models.Analyst, WithReliability(rel))
+	}
+	invMixed.DeclareSourceDependency("a", "shared")
+	invMixed.DeclareSourceDependency("b", "shared")
+	invMixed.AddSubject("co", "Company", "company")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		invMixed.AssertClaim(id, prop("co", "outlook", "positive"), now, iv)
+	}
+	mixedU := invMixed.Q("co", "outlook", iv)[0].Opinion.Uncertainty
+
+	// Mixed should be between full-dep and full-indep
+	if mixedU <= fullIndepU {
+		t.Errorf("mixed u=%.6f should be > full-indep u=%.6f", mixedU, fullIndepU)
+	}
+	if mixedU >= fullDepU {
+		t.Errorf("mixed u=%.6f should be < full-dep u=%.6f", mixedU, fullDepU)
+	}
+}
+
+// TestTransitiveDependency: A→B, B→C chain puts all 3 in same group.
+func TestTransitiveDependency(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+	rel := 0.7
+
+	inv := New("transitive dep")
+	inv.AddActor("a", "A", models.Analyst, WithReliability(rel))
+	inv.AddActor("b", "B", models.Analyst, WithReliability(rel))
+	inv.AddActor("c", "C", models.Analyst, WithReliability(rel))
+	inv.AddSubject("co", "Company", "company")
+
+	// A depends on B, B depends on C → transitive: all in one group
+	inv.DeclareSourceDependency("a", "b")
+	inv.DeclareSourceDependency("b", "c")
+
+	inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("b", prop("co", "outlook", "positive"), now, iv)
+	inv.AssertClaim("c", prop("co", "outlook", "positive"), now, iv)
+
+	depResults := inv.Q("co", "outlook", iv)
+	depEP := depResults[0].Opinion.ExpectedProbability()
+
+	// Single-actor reference (ABF of 3 identical = single)
+	invRef := New("ref")
+	invRef.AddActor("solo", "Solo", models.Analyst, WithReliability(rel))
+	invRef.AddSubject("co", "Company", "company")
+	invRef.AssertClaim("solo", prop("co", "outlook", "positive"), now, iv)
+	refEP := invRef.Q("co", "outlook", iv)[0].Opinion.ExpectedProbability()
+
+	if !depApprox(depEP, refEP) {
+		t.Errorf("transitive dep EP=%.6f, want single-actor EP=%.6f", depEP, refEP)
+	}
+}
+
+// TestNoDependenciesBackwardCompatible: Q() with no deps = current behavior.
+func TestNoDependenciesBackwardCompatible(t *testing.T) {
+	iv := mkInterval(2023, 1, 1, 2023, 12, 31)
+	now := mustTime(2024, 1, 1)
+
+	inv := New("backward compat")
+	inv.AddActor("a", "A", models.Analyst, WithReliability(0.7))
+	inv.AddActor("b", "B", models.Expert, WithReliability(0.8))
+	inv.AddActor("c", "C", models.Institutional, WithReliability(0.65))
+	inv.AddSubject("co", "Company", "company")
+
+	idA := inv.AssertClaim("a", prop("co", "outlook", "positive"), now, iv)
+	idB := inv.AssertClaim("b", prop("co", "outlook", "positive"), now, iv)
+	idC := inv.AssertClaim("c", prop("co", "outlook", "positive"), now, iv)
+
+	results := inv.Q("co", "outlook", iv)
+	qOp := results[0].Opinion
+
+	// Manually compute: per-actor ABF (1 claim each = identity), then CBF across all
+	aA, err := inv.AnalyzeClaim(idA)
+	if err != nil {
+		t.Fatalf("AnalyzeClaim(%s): %v", idA, err)
+	}
+	aB, err := inv.AnalyzeClaim(idB)
+	if err != nil {
+		t.Fatalf("AnalyzeClaim(%s): %v", idB, err)
+	}
+	aC, err := inv.AnalyzeClaim(idC)
+	if err != nil {
+		t.Fatalf("AnalyzeClaim(%s): %v", idC, err)
+	}
+	manualCBF := subjective.ConsensusFuse(aA.Credibility, aB.Credibility, aC.Credibility)
+
+	if !depApprox(qOp.Belief, manualCBF.Belief) ||
+		!depApprox(qOp.Disbelief, manualCBF.Disbelief) ||
+		!depApprox(qOp.Uncertainty, manualCBF.Uncertainty) {
+		t.Errorf("no-deps Q() = %+v, want manual CBF = %+v", qOp, manualCBF)
+	}
+}
+
+// TestCurveballEchoChain: realistic echo-chamber scenario.
+func TestCurveballEchoChain(t *testing.T) {
+	iv := mkInterval(2001, 1, 1, 2003, 3, 19)
+	now := mustTime(2002, 10, 1)
+
+	inv := New("curveball echo")
+	inv.AddActor("curveball", "Curveball", models.Anonymous, WithReliability(0.25))
+	inv.AddActor("cia", "CIA", models.Institutional, WithReliability(0.70))
+	inv.AddActor("dia", "DIA", models.Institutional, WithReliability(0.65))
+	inv.AddActor("mi6", "MI6", models.Institutional, WithReliability(0.65))
+	inv.AddSubject("bio-labs", "Mobile Bio Labs", "evidence-item")
+
+	// All dependent on Curveball
+	inv.DeclareSourceDependency("cia", "curveball")
+	inv.DeclareSourceDependency("dia", "curveball")
+	inv.DeclareSourceDependency("mi6", "curveball")
+
+	// Each agency makes a claim based on Curveball's intel
+	inv.AssertClaim("cia", prop("bio-labs", "existence", "confirmed"), now, iv)
+	inv.AssertClaim("dia", prop("bio-labs", "existence", "confirmed"), now, iv)
+	inv.AssertClaim("mi6", prop("bio-labs", "existence", "confirmed"), now, iv)
+
+	depResults := inv.Q("bio-labs", "existence", iv)
+	depEP := depResults[0].Opinion.ExpectedProbability()
+	depU := depResults[0].Opinion.Uncertainty
+
+	// Reference: single Curveball-level source (reliability 0.25).
+	// The whole point of the echo-chamber is that Curveball's low reliability
+	// gets laundered through high-reliability agencies. With dependency-aware
+	// fusion, the result should stay closer to this low-reliability baseline
+	// than to the amplified CBF result.
+	invRef := New("ref")
+	invRef.AddActor("solo", "Solo", models.Anonymous, WithReliability(0.25))
+	invRef.AddSubject("bio-labs", "Mobile Bio Labs", "evidence-item")
+	invRef.AssertClaim("solo", prop("bio-labs", "existence", "confirmed"), now, iv)
+	refResult := invRef.Q("bio-labs", "existence", iv)[0].Opinion
+	refU := refResult.Uncertainty
+
+	// Dependent uncertainty should stay near the upstream source level, not
+	// collapse via echo amplification. With ABF over correlated agencies, the
+	// fused uncertainty should be within ~50% of the single-source reference.
+	if depU < refU*0.5 {
+		t.Errorf("echo-chain u=%.4f is too low (Curveball-level ref u=%.4f); echo amplification detected",
+			depU, refU)
+	}
+	// Also verify the fused uncertainty is meaningfully high (>= 0.3),
+	// not collapsed to near-zero as CBF would produce.
+	if depU < 0.3 {
+		t.Errorf("echo-chain u=%.4f should be >= 0.3 (meaningful uncertainty preserved)", depU)
+	}
+
+	// Without dependencies: should show echo amplification
+	invNoDep := New("no dep")
+	invNoDep.AddActor("cia", "CIA", models.Institutional, WithReliability(0.70))
+	invNoDep.AddActor("dia", "DIA", models.Institutional, WithReliability(0.65))
+	invNoDep.AddActor("mi6", "MI6", models.Institutional, WithReliability(0.65))
+	invNoDep.AddSubject("bio-labs", "Mobile Bio Labs", "evidence-item")
+	invNoDep.AssertClaim("cia", prop("bio-labs", "existence", "confirmed"), now, iv)
+	invNoDep.AssertClaim("dia", prop("bio-labs", "existence", "confirmed"), now, iv)
+	invNoDep.AssertClaim("mi6", prop("bio-labs", "existence", "confirmed"), now, iv)
+	noDepEP := invNoDep.Q("bio-labs", "existence", iv)[0].Opinion.ExpectedProbability()
+
+	// Independent fusion should show higher confidence (lower uncertainty)
+	if depEP >= noDepEP {
+		t.Errorf("dependent EP=%.4f should be < independent EP=%.4f", depEP, noDepEP)
 	}
 }

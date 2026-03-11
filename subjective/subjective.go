@@ -248,6 +248,15 @@ func EvidenceCounts(o Opinion) (r, s float64) {
 // ABF is idempotent: fusing an opinion with itself returns the same opinion.
 // Use ABF for dependent sources (e.g. same actor repeating a claim).
 //
+// This uses the direct n-ary formula from Josang, Diaz & Rifqi (2010) §4,
+// Eq. 16 rather than pairwise iteration, which is not associative for
+// heterogeneous uncertainties. For n=2 this reduces to the pairwise formula.
+//
+// Numerical stability note: the formula computes prodU = prod_i(u_i), which
+// underflows to 0 in IEEE 754 for large n with moderate uncertainties (e.g.,
+// n≈40 at u=0.5). For investigation-scale inputs (n<20) this is not an issue.
+// A log-space implementation would be needed for very large n.
+//
 // Reference: Josang, Diaz & Rifqi (2010) §4, Eq. 16.
 func AveragingFuse(opinions ...Opinion) Opinion {
 	if len(opinions) == 0 {
@@ -256,57 +265,113 @@ func AveragingFuse(opinions ...Opinion) Opinion {
 	if len(opinions) == 1 {
 		return opinions[0]
 	}
-	result := opinions[0]
-	for i := 1; i < len(opinions); i++ {
-		result = abfTwo(result, opinions[i])
-	}
-	return result
-}
 
-// abfTwo implements pairwise Averaging Belief Fusion.
-//
-// Reference: Josang, Diaz & Rifqi (2010) §4.
-func abfTwo(a, b Opinion) Opinion {
-	// Both dogmatic: weighted average with equal weights.
-	if a.Uncertainty == 0 && b.Uncertainty == 0 {
-		return Opinion{
-			Belief:      (a.Belief + b.Belief) / 2,
-			Disbelief:   (a.Disbelief + b.Disbelief) / 2,
-			Uncertainty: 0,
-			BaseRate:    (a.BaseRate + b.BaseRate) / 2,
+	n := len(opinions)
+	fn := float64(n)
+
+	// Count dogmatic opinions (u=0).
+	dogmaticCount := 0
+	for _, o := range opinions {
+		if o.Uncertainty == 0 {
+			dogmaticCount++
 		}
 	}
-	// One dogmatic: dominates (infinite evidence).
-	if a.Uncertainty == 0 {
-		return a
-	}
-	if b.Uncertainty == 0 {
-		return b
+
+	// All dogmatic: weighted average with equal weights.
+	// Per Josang (2010) Eq. 15 generalized to n sources.
+	if dogmaticCount == n {
+		b, d, a := 0.0, 0.0, 0.0
+		for _, o := range opinions {
+			b += o.Belief
+			d += o.Disbelief
+			a += o.BaseRate
+		}
+		return Opinion{b / fn, d / fn, 0, a / fn}
 	}
 
-	// Normal case: ABF (Eq. 16).
-	// K_a = u_b, K_b = u_a (for n=2, K_k = product of u_j for j != k)
-	// denom = u_a + u_b
-	denom := a.Uncertainty + b.Uncertainty
-	if math.Abs(denom) < 1e-12 {
-		return Vacuous((a.BaseRate + b.BaseRate) / 2)
+	// Some (but not all) dogmatic: dogmatic opinions dominate (infinite evidence).
+	// If exactly one is dogmatic, it dominates completely (per Josang 2016 §12.3).
+	// If multiple are dogmatic, K_i = 0 for ALL i (each K_i = prod_{j!=i}(u_j)
+	// includes at least one zero from another dogmatic opinion), so the n-ary
+	// formula is degenerate. We average over the dogmatic subset only, discarding
+	// non-dogmatic opinions — this is consistent with CBF's dogmatic handling and
+	// the interpretation that dogmatic opinions represent infinite evidence which
+	// subsumes any finite evidence from non-dogmatic sources.
+	// Note: this case is not explicitly defined in Josang (2010); it is an
+	// extrapolation from the mathematical structure of Eq. 16.
+	if dogmaticCount > 0 {
+		if dogmaticCount == 1 {
+			for _, o := range opinions {
+				if o.Uncertainty == 0 {
+					return o
+				}
+			}
+		}
+		b, d, a := 0.0, 0.0, 0.0
+		for _, o := range opinions {
+			if o.Uncertainty == 0 {
+				b += o.Belief
+				d += o.Disbelief
+				a += o.BaseRate
+			}
+		}
+		dc := float64(dogmaticCount)
+		return Opinion{b / dc, d / dc, 0, a / dc}
 	}
 
-	belief := (a.Belief*b.Uncertainty + b.Belief*a.Uncertainty) / denom
-	disbelief := (a.Disbelief*b.Uncertainty + b.Disbelief*a.Uncertainty) / denom
-	uncertainty := 2 * a.Uncertainty * b.Uncertainty / denom
+	// Normal case: n-ary ABF (Eq. 16).
+	// K_i = prod_{j!=i}(u_j) = prodU / u_i
+	// K   = sum_i(K_i)
+	// b_fused = sum_i(b_i * K_i) / K
+	// d_fused = sum_i(d_i * K_i) / K
+	// u_fused = n * prod_i(u_i) / K
+	prodU := 1.0
+	for _, o := range opinions {
+		prodU *= o.Uncertainty
+	}
+
+	K := 0.0
+	for _, o := range opinions {
+		K += prodU / o.Uncertainty
+	}
+
+	if math.Abs(K) < 1e-12 {
+		a := 0.0
+		for _, o := range opinions {
+			a += o.BaseRate
+		}
+		return Vacuous(a / fn)
+	}
+
+	bFused, dFused := 0.0, 0.0
+	for _, o := range opinions {
+		Ki := prodU / o.Uncertainty
+		bFused += o.Belief * Ki
+		dFused += o.Disbelief * Ki
+	}
+	bFused /= K
+	dFused /= K
+	uFused := fn * prodU / K
 
 	// Confidence-weighted base rate.
-	confA := 1 - a.Uncertainty
-	confB := 1 - b.Uncertainty
-	confSum := confA + confB
+	confSum := 0.0
+	for _, o := range opinions {
+		confSum += 1 - o.Uncertainty
+	}
 	var baseRate float64
 	if confSum < 1e-12 {
-		baseRate = (a.BaseRate + b.BaseRate) / 2
+		for _, o := range opinions {
+			baseRate += o.BaseRate
+		}
+		baseRate /= fn
 	} else {
-		baseRate = (a.BaseRate*confA + b.BaseRate*confB) / confSum
+		for _, o := range opinions {
+			baseRate += o.BaseRate * (1 - o.Uncertainty)
+		}
+		baseRate /= confSum
 	}
-	return Opinion{belief, disbelief, uncertainty, baseRate}
+
+	return Opinion{bFused, dFused, uFused, baseRate}
 }
 
 // Negate swaps belief↔disbelief and flips the base rate.
