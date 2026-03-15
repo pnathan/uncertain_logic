@@ -382,7 +382,7 @@ func (s *server) handleNode(w http.ResponseWriter, r *http.Request) {
 
 	// Actor
 	if a, ok := s.actors[c.ActorID]; ok {
-		adj := a.AdjustedReliability(c.SubjectID)
+		adj := a.AdjustedReliability(c.SubjectID, c.Predicate)
 		fmt.Fprintf(w, `<div class="section"><h3>Actor</h3>
 			<p>%s (%s)</p>
 			<p>Reliability: %.3f (base %.3f)</p></div>`,

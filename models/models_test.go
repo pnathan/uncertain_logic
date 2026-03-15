@@ -73,13 +73,13 @@ func TestTrustPenalty(t *testing.T) {
 func TestAdjustedReliability(t *testing.T) {
 	// r > 1 clamps to 1
 	high := &Actor{BaseReliability: 2.0}
-	if r := high.AdjustedReliability("x"); r != 1.0 {
+	if r := high.AdjustedReliability("x", ""); r != 1.0 {
 		t.Errorf("r>1 should clamp to 1, got %v", r)
 	}
 
 	// r < 0 clamps to 0
 	neg := &Actor{BaseReliability: -1.0}
-	if r := neg.AdjustedReliability("x"); r != 0.0 {
+	if r := neg.AdjustedReliability("x", ""); r != 0.0 {
 		t.Errorf("r<0 should clamp to 0, got %v", r)
 	}
 
@@ -90,7 +90,7 @@ func TestAdjustedReliability(t *testing.T) {
 			{SubjectID: "other_subject", Disclosed: false},
 		},
 	}
-	if r := a.AdjustedReliability("my_subject"); r != 0.8 {
+	if r := a.AdjustedReliability("my_subject", ""); r != 0.8 {
 		t.Errorf("unscoped conflict should not reduce reliability, got %v", r)
 	}
 
@@ -101,8 +101,88 @@ func TestAdjustedReliability(t *testing.T) {
 			{SubjectID: "my_subject", Disclosed: false},
 		},
 	}
-	if r := a2.AdjustedReliability("my_subject"); r >= 0.8 {
+	if r := a2.AdjustedReliability("my_subject", ""); r >= 0.8 {
 		t.Errorf("scoped conflict should reduce reliability, got %v", r)
+	}
+}
+
+func TestCompetenceAdjustsReliability(t *testing.T) {
+	// A nuclear physicist: expert on enrichment, mediocre on biological weapons.
+	physicist := &Actor{
+		BaseReliability: 0.85,
+		Competence: map[string]float64{
+			"enrichment-capability": 0.95,
+			"biological-program":   0.40,
+		},
+		DefaultCompetence: 0.60,
+	}
+
+	// High competence topic: 0.85 * 0.95 = 0.8075
+	nuclear := physicist.AdjustedReliability("", "enrichment-capability")
+	if nuclear < 0.80 || nuclear > 0.82 {
+		t.Errorf("nuclear competence reliability = %.4f, want ~0.8075", nuclear)
+	}
+
+	// Low competence topic: 0.85 * 0.40 = 0.34
+	bio := physicist.AdjustedReliability("", "biological-program")
+	if bio < 0.33 || bio > 0.35 {
+		t.Errorf("bio competence reliability = %.4f, want ~0.34", bio)
+	}
+
+	// Different topics must produce different reliabilities
+	if nuclear <= bio {
+		t.Errorf("nuclear reliability (%.4f) should exceed bio reliability (%.4f)", nuclear, bio)
+	}
+
+	// Unknown topic falls back to DefaultCompetence: 0.85 * 0.60 = 0.51
+	unknown := physicist.AdjustedReliability("", "economics")
+	if unknown < 0.50 || unknown > 0.52 {
+		t.Errorf("unknown topic reliability = %.4f, want ~0.51", unknown)
+	}
+}
+
+func TestCompetenceBackwardCompatible(t *testing.T) {
+	// Actor without competence scores: behaves exactly as before
+	actor := &Actor{BaseReliability: 0.7}
+	r := actor.AdjustedReliability("subj", "any-predicate")
+	if r != 0.7 {
+		t.Errorf("no-competence actor reliability = %v, want 0.7", r)
+	}
+}
+
+func TestCompetenceWithConflicts(t *testing.T) {
+	// Competence and conflicts compose multiplicatively
+	actor := &Actor{
+		BaseReliability: 0.80,
+		Competence:      map[string]float64{"topic-a": 0.50},
+		Conflicts: []ConflictOfInterest{
+			{SubjectID: "s1", Disclosed: true}, // ×0.80
+		},
+	}
+	// 0.80 * 0.50 * 0.80 = 0.32
+	r := actor.AdjustedReliability("s1", "topic-a")
+	if r < 0.31 || r > 0.33 {
+		t.Errorf("competence+conflict reliability = %.4f, want ~0.32", r)
+	}
+}
+
+func TestCompetenceClone(t *testing.T) {
+	orig := Actor{
+		ID:              "a1",
+		BaseReliability: 0.8,
+		Competence:      map[string]float64{"topic-a": 0.9},
+	}
+	clone := orig.Clone()
+
+	// Mutate clone map — original must be unaffected
+	clone.Competence["topic-a"] = 0.1
+	clone.Competence["topic-b"] = 0.5
+
+	if orig.Competence["topic-a"] != 0.9 {
+		t.Errorf("clone mutated original Competence[topic-a]")
+	}
+	if _, ok := orig.Competence["topic-b"]; ok {
+		t.Errorf("clone added key to original Competence map")
 	}
 }
 

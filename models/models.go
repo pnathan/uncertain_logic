@@ -130,15 +130,31 @@ type Actor struct {
 	ID              string
 	Name            string
 	SourceType      SourceType
-	BaseReliability float64
+	BaseReliability float64 // disposition: general honesty/carefulness
 	Conflicts       []ConflictOfInterest
 	Notes           string
+
+	// Competence holds per-predicate competence scores (0–1).
+	// Effective reliability = disposition × competence(topic).
+	// See Castelfranchi & Falcone (2010) for the disposition/competence decomposition.
+	Competence        map[string]float64
+	DefaultCompetence float64 // fallback when no predicate-specific score exists; 0 means 1.0
 }
 
-// AdjustedReliability computes the actor's effective reliability for a given subject,
-// applying all relevant conflict-of-interest penalties.
-func (a *Actor) AdjustedReliability(subjectID string) float64 {
+// AdjustedReliability computes the actor's effective reliability for a given subject
+// and predicate, applying competence scaling and conflict-of-interest penalties.
+//
+// effective = disposition × competence(predicate) × conflict_penalties
+//
+// When no competence map is set or the predicate has no entry, DefaultCompetence
+// is used (which itself defaults to 1.0 for backward compatibility).
+func (a *Actor) AdjustedReliability(subjectID, predicate string) float64 {
 	r := a.BaseReliability
+
+	// Apply competence scaling
+	competence := a.effectiveCompetence(predicate)
+	r *= competence
+
 	for _, c := range a.Conflicts {
 		if c.SubjectID == "" || c.SubjectID == subjectID {
 			r *= c.TrustPenalty()
@@ -151,6 +167,20 @@ func (a *Actor) AdjustedReliability(subjectID string) float64 {
 		return 1
 	}
 	return r
+}
+
+// effectiveCompetence returns the competence score for the given predicate.
+// Falls back to DefaultCompetence, then to 1.0.
+func (a *Actor) effectiveCompetence(predicate string) float64 {
+	if a.Competence != nil && predicate != "" {
+		if score, ok := a.Competence[predicate]; ok {
+			return score
+		}
+	}
+	if a.DefaultCompetence != 0 {
+		return a.DefaultCompetence
+	}
+	return 1.0
 }
 
 // Subject is an entity (company, person, event) that claims are about.
@@ -224,6 +254,12 @@ func (a Actor) Clone() Actor {
 	if len(a.Conflicts) > 0 {
 		clone.Conflicts = make([]ConflictOfInterest, len(a.Conflicts))
 		copy(clone.Conflicts, a.Conflicts)
+	}
+	if len(a.Competence) > 0 {
+		clone.Competence = make(map[string]float64, len(a.Competence))
+		for k, v := range a.Competence {
+			clone.Competence[k] = v
+		}
 	}
 	return clone
 }

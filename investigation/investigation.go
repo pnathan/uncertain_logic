@@ -332,6 +332,23 @@ func WithActorNotes(notes string) ActorOption {
 	return func(a *models.Actor) { a.Notes = notes }
 }
 
+// WithCompetence sets a predicate-specific competence score for the actor.
+// Multiple calls accumulate entries. Score should be in [0, 1].
+func WithCompetence(predicate string, score float64) ActorOption {
+	return func(a *models.Actor) {
+		if a.Competence == nil {
+			a.Competence = make(map[string]float64)
+		}
+		a.Competence[predicate] = score
+	}
+}
+
+// WithDefaultCompetence sets the fallback competence score for predicates
+// not explicitly listed. If not set, defaults to 1.0 (full competence).
+func WithDefaultCompetence(score float64) ActorOption {
+	return func(a *models.Actor) { a.DefaultCompetence = score }
+}
+
 // AddActor registers an actor. Default reliability: 0.6.
 // Returns a value copy of the created actor.
 func (inv *Investigation) AddActor(id, name string, sourceType models.SourceType, opts ...ActorOption) models.Actor {
